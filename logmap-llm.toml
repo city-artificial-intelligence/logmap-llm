@@ -1,0 +1,39 @@
+# 
+# LogMap-LLM TOML configuration file
+#
+
+[alignmentTask] 
+onto_source = '/Users/dave/research/logmap-usage/ontologies/mouse.owl'
+onto_target = '/Users/dave/research/logmap-usage/ontologies/human.owl'
+
+[oraclePrompting]
+oracle_prompt_template = 'oracle prompt template name'
+
+[oracle]
+openrouter_apikey = 'openrouter apikey'
+openrouter_model_name = 'openrouter LLM model name'
+
+[performanceEvaluation] 
+reference_alignment = 'path/to/reference/alignment/file/full.tsv'
+
+[pipeline]
+align_ontologies = false
+build_oracle_prompts = false
+consult_oracle = true
+refine_alignment = false
+
+[outputs] 
+outputs_dir = 'path/to/outputs/directory/'
+deep_outputs = false
+
+[outputsDeep]
+expt_family = 'x'
+expt_name = 'x'
+oa_task_family = 'x'
+oa_task = 'x'
+expt_run = 1
+
+#[other]  # ???
+
+
+
