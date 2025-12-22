@@ -16,3 +16,7 @@ Current efforts are focusing on the creation of an integrated LogMapLLM pipeline
 - Sviatoslav Lushnei, Dmytro Shumskyi, Severyn Shykula, Ernesto Jiménez-Ruiz, and Artur Garcez. **Large Language Models as Oracles for Ontology Alignment**. [arXiv](https://ernestojimenezruiz.github.io/assets/pdf/llm-oa-oracles-2025.pdf). 2025
 - Ernesto Jiménez-Ruiz, Sviatoslav Lushnei, Dmytro Shumskyi, Severyn Shykula, and Artur Garcez. **LogMap Family welcomes LogMapLLM in the OAEI 2025**. OM 2025: The 20th International Workshop on Ontology Matching collocated with the 24th International Semantic Web Conference (ISWC). 2025. [[PDF](https://ceur-ws.org/Vol-4144/om2025-oaei-paper7.pdf)]
 
+
+### Acknowledgements
+
+This work has been partially funded by the [RAI for Ukraine program](https://airesponsibly.net/RAIforUkraine/) (NYU Center for Responsible AI) and by The Turing project [GUARD](https://ernestojimenezruiz.github.io/projects/guard/).
