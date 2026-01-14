@@ -14,9 +14,18 @@ Current efforts are focusing on the creation of an integrated LogMapLLM pipeline
 
 The following figure shows a snapshot of a LogMap-LLM session when LogMap-LLM is used from the command-line. In this use case, the hypothetical user is using LogMap-LLM in order to use LogMap by itself, without involving LLM Oracles. This use case best supports exploratory ontology alignment, where the user wants to use LogMap alone, but prefers a Pythonic way of interacting with LogMap (a Java application).
 
-The LogMap-LLM basic configuration file, `logmap-llm-config-basic.toml`, allows the user to configure the LogMap-LLM pipeline (as depicted in the conceptual architecture figure, above) for the use case demonstrated in the console snapshot.
+The LogMap-LLM basic configuration file, `logmap-llm-config-basic.toml`, allows the user to configure the LogMap-LLM pipeline (depicted in the conceptual architecture diagram) for the use case demonstrated in this console snapshot.  In `logmap-llm-config-basic.toml`, this pipeline configuration is called **use case A**.
 
 ![LogMap-LLM](figs/use-case-config-A.png "LogMap-LLM user experience example 1")
+
+
+### LogMap-LLM user experience example 2
+
+The following figure shows a snapshot of a LogMap-LLM session when LogMap-LLM is used from the command-line to consult with an LLM Oracle. In this use case, the hypothetical user is reusing an existing intial LogMap alignment, but now is consulting an LLM Oracle for predictions with respect to `M_ask` --- the set of mappings to ask an Oracle.  By taking the feedback from the Oracle with respect to `M_ask` into account, LogMap is able to refine its alignment for the given alignment task.
+
+The LogMap-LLM basic configuration file, `logmap-llm-config-basic.toml`, the pipeline configuration for this use case is called **use case C**.
+
+![LogMap-LLM](figs/use-case-config-C.png "LogMap-LLM user experience example 2")
 
 
 ### Additional repositories
