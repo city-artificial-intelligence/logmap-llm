@@ -5,6 +5,11 @@ There are many methods and systems to tackle the ontology alignment problem, yet
 
 Current efforts are focusing on the creation of an integrated LogMapLLM pipeline (this repository).
 
+### LogMap-LLM conceptual architecture
+
+![LogMap-LLM](figs/LogMap-LLM.png "LogMap-LLM conceptual architecture")
+
+
 ### Additional repositories
 
 - LogMap Ontology Alignment System: [https://github.com/ernestojimenezruiz/logmap-matcher](https://github.com/ernestojimenezruiz/logmap-matcher)
