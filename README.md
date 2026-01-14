@@ -7,6 +7,8 @@ Current efforts are focusing on the creation of an integrated LogMapLLM pipeline
 
 ### LogMap-LLM conceptual architecture
 
+In the architecture diagram, references to `M_ask` refer to the **mappings to ask** an Oracle. These are mappings considered during the LogMap alignment of which LogMap is particularly uncertain, and for which it invites feedback (opinions) from an external Oracle of some kind. In the case of LogMap-LLM, the Oracle is an LLM rather than a human domain expert.  For each candidate mapping (pair of entities) in the set `M_ask`, LogMap-LLM builds a unique Oracle (LLM) **user** prompt to put to an LLM. The predictions of the LLM Oracle for `M_ask` are then fed into LogMap so that it can refine its initial alignment, by taking the predictions of the LLM Oracle for the candidate mappings in `M_ask` into account.
+
 ![LogMap-LLM](figs/LogMap-LLM.png "LogMap-LLM conceptual architecture")
 
 
