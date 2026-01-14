@@ -1,0 +1,124 @@
+# 
+# LogMap-LLM basic configuration
+#
+# - Use this configuration file to configure your LogMap-LLM session
+# - Providing the basic configuration of your LogMap-LLM session here, in this
+#   configuration file, is mandatory.
+# - Optionally, you can go further and perform additional, more fine-grained,
+#   configuration of LLM Oracle behaviours and LLM interaction behaviours
+#   in LogMap-LLM's 'expert' configuration file.  
+# - LogMap-LLM's default 'expert' configuration is designed to work with a 
+#   wide range of LLM models.  But even though it works, this does not mean
+#   it is an optimal configuration for your choice of LLM model. Further, some 
+#   LLM models have particular configuration requirements or restrictions, and
+#   LogMap-LLM's default 'expert' configuration may be incompatible in some
+#   respect. So, depending on the LLM model you choose for your Oracle, you 
+#   want or need to perform some amount of 'expert' configuration.
+# - Specified paths (for files and directories) must be absolute, not relative.
+# 
+# Notes regarding LogMap configuration:
+# - LogMap has its own configuration file, called 'parameters.txt',
+#   which accompanies the LogMap Java .jar file in the LogMap-LLM distribution.
+#   You can place a copy of LogMap's 'parameters.txt' file anywhere you like,
+#   for greater convenience in configuring LogMap, should you wish to do so. 
+#   You can then use the LogMap-LLM parameter 'logmap_parameters_dirpath' 
+#   (see below) to tell LogMap-LLM where you have placed that file, so it can 
+#   inform LogMap where to find it. 
+# - Alternatively, you can copy LogMap's 'parameters.txt' file into the Python
+#   'current working directory' of your LogMap-LLM session and LogMap will
+#   find it there automatically. In this case, you can assign an empty string
+#   value ('' or "") to the 'logmap_parameters_dirpath' parameter, below. 
+#
+
+[alignmentTask]
+task_name = 'anatomy'
+onto_source_filepath = '/Users/dave/research/logmap-usage/ontologies/mouse.owl'
+onto_target_filepath = '/Users/dave/research/logmap-usage/ontologies/human.owl'
+generate_extended_mappings_to_ask_oracle = false
+logmap_parameters_dirpath = '/Users/dave/research/logmap-20251230/'
+
+[oracle]
+openrouter_apikey = 'an-LLM-API-key'
+openrouter_model_name = 'an-LLM-model-name'
+oracle_dev_prompt_template_name = 'not in use yet; anything will do'
+oracle_user_prompt_template_name = 'one_level_of_parents_and_synonyms'
+
+[outputs]
+logmapllm_output_dirpath = '/Users/dave/research/logmap-usage/logmapllm-outputs/'
+logmap_initial_alignment_output_dirpath = '/Users/dave/research/logmap-usage/logmap-initial-alignment/'
+logmap_refined_alignment_output_dirpath = '/Users/dave/research/logmap-usage/logmap-refined-alignment/'
+
+[pipeline]
+align_ontologies = 'reuse'
+build_oracle_prompts = 'build'
+consult_oracle = 'consult'
+refine_alignment = 'refine'
+
+# Notes regarding LogMap-LLM pipeline configuration ...
+#
+# Each step of the LogMap-LLM pipeline needs to be assigned one of its
+# valid values. The valid values for each pipelin step are as follows:
+#
+# align_ontologies    : 'align',   'reuse'
+# build_oracle_prompts: 'build',   'reuse', 'bypass'
+# consult_oracle      : 'consult', 'reuse', 'bypass'
+# refine_alignment    : 'refine',           'bypass'
+# 
+# Value 'reuse' is an instruction to reuse a corresponding asset that was
+# generated previously, by loading it from a file rather than performing
+# redundant processing. This can be especially useful with respect to 
+# step 2, building oracle user prompts.
+#
+# Value 'bypass' is an instruction to bypass a pipeline step altogether.
+# No processing occurs, nothing is loaded for reuse.  Nothing happens.
+# If a step is bypassed, all subsequent pipeline steps should be bypassed
+# as well. This pattern is in evidence in use case configurations (A) and 
+# (E), in the table below.
+#
+# The LogMap-LLM pipeline can be configured to serve different use cases.
+# The following table indicates the most likely use case configurations.
+#
+#                       + - - - useful pipeline use case configurations - - - - +
+#                            A          B           C           D           E
+# align_ontologies    : | 'align'  | 'align'   | 'reuse'   | 'reuse'   | 'reuse'
+# build_oracle_prompts: | 'bypass' | 'build'   | 'build'   | 'reuse'   | 'build'
+# consult_oracle      : | 'bypass' | 'consult' | 'consult' | 'consult' | 'bypass'
+# refine_alignment    : | 'bypass' | 'refine'  | 'refine'  | 'refine'  | 'bypass'
+#
+# Use case config (A): 
+# - This use case configuration is for using LogMap alone. You can ignore
+#   LLM Oracles and LogMap's Oracle-refined alignment, and focus only on
+#   LogMap's initial alignment.
+# - This equates to a Pythonic way of running LogMap (a Java application).
+# - This use case configuration best supports exploratory ontology alignment.
+# 
+# Use case config (B):
+# - This use case configuration represents the LogMap-LLM 'full Monty'.
+# - Every step of the pipeline is performed afresh. Nothing is reused, even
+#   though some or all of the relevant assets may exist in files in one of
+#   the LogMap/LogMap-LLM output directories.
+#
+# Use case config (C): 
+# - This use case configuration supports comparing multiple different Oracle 
+#   user prompt template designs for a given alignment task. The initial
+#   LogMap alignment can be performed once, and then reused for different
+#   prompt templates.
+#
+# Use case config (D): 
+# - This use case configuration supports comparing multiple different Oracles 
+#   (LLM models) for a given alignment task and a given Oracle user prompt 
+#   template.
+# - Different LLM models will make different predictions for the 'mappings 
+#   to ask', and these differing opinions will have different effects on 
+#   LogMap's ultimate Oracle-refined alignment.
+# - This use case configuration allows one to explore the effects of
+#   different LLM models with the greatest processing efficiency.
+#
+# Use case config (E): 
+# - This use case configuration supports the building of Oracle user prompts
+#   for multiple prompt template designs prior to using any of them for 
+#   consulting LLM Oracles.  Once all of the Oracle user prompt building is
+#   done for a given alignment task, the use case configuration can then be
+#   switched to use case (D) for consulting multiple different LLM Oracles.
+#
+

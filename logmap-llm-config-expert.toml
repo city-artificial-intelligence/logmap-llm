@@ -1,0 +1,30 @@
+# 
+# LogMap-LLM expert configuration
+# 
+# Notes:
+# - tbd (to be determined)
+#
+
+[tableName1]
+tbd1 = 'tbd1'
+
+[tableName2]
+tbd2 = 'tbd2'
+
+#
+# this file will have parameters like:
+#
+#
+# max_completion_tokens
+# temperature
+# top_p
+# reasoning_effort
+# response_format 
+#
+# interaction_style_name
+# - a new concept being introduced
+# - e.g. a way of switching between, say, using the OpenAI chat.completions API and
+#   using the OpenAI Responses API, within the same OracleConsultationManager (LLM Server)
+#
+#
+
