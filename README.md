@@ -10,6 +10,13 @@ Current efforts are focusing on the creation of an integrated LogMapLLM pipeline
 ![LogMap-LLM](figs/LogMap-LLM.png "LogMap-LLM conceptual architecture")
 
 
+### LogMap-LLM user experience example 1
+
+The following figure shows a snapshot of a LogMap-LLM session when LogMap-LLM is used from the command-line. In this use case, the hypothetical user is using LogMap-LLM in order to use LogMap by itself, without involving LLM Oracles. This use case best supports exploratory ontology alignment, where the user wants to use LogMap alone, but prefers a Pythonic way of interacting with LogMap (a Java application).
+
+![LogMap-LLM](figs/use-case-config-A.png "LogMap-LLM user experience example 1")
+
+
 ### Additional repositories
 
 - LogMap Ontology Alignment System: [https://github.com/ernestojimenezruiz/logmap-matcher](https://github.com/ernestojimenezruiz/logmap-matcher)
