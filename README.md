@@ -7,9 +7,11 @@ Current efforts are focusing on the creation of an integrated LogMapLLM pipeline
 
 ### LogMap-LLM conceptual architecture
 
-In the architecture diagram, references to `M_ask` refer to the **mappings to ask** an Oracle. These are mappings considered during the LogMap alignment of which LogMap is particularly uncertain, and for which it invites feedback (opinions) from an external Oracle of some kind. In the case of LogMap-LLM, the Oracle is an LLM rather than a human domain expert.  For each candidate mapping (pair of entities) in the set `M_ask`, LogMap-LLM builds a unique Oracle (LLM) **user** prompt to put to an LLM. The predictions of the LLM Oracle for `M_ask` are then fed into LogMap so that it can refine its initial alignment, by taking the predictions of the LLM Oracle for the candidate mappings in `M_ask` into account.
+Here is a conceptual view of LogMap-LLM:
 
 ![LogMap-LLM](figs/LogMap-LLM.png "LogMap-LLM conceptual architecture")
+
+The LogMap-LLM pipeline begins with LogMap doing an initial alignment for two ontologies. The references to `M_ask` refer to **mappings to ask** an Oracle. These are mappings (potential or candidate mappings) of which LogMap is uncertain, and for which it invites feedback (opinions or predictions) from an external Oracle of some kind. In the case of LogMap-LLM, the Oracle is an LLM rather than a human domain expert.  For each candidate mapping (pair of ontology entities) in the set `M_ask`, LogMap-LLM builds a unique Oracle (LLM) **user** prompt to put to an LLM. The predictions of an LLM Oracle in relation to these `M_ask` **user** prompts are then collected and fed into LogMap so that it can refine its initial alignment, by taking account of the Oracle's feedback (the predictions of an LLM).
 
 
 ### LogMap-LLM user experience example 1
