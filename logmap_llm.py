@@ -82,9 +82,9 @@ with open("logmap-llm-config-basic.toml", mode="rb") as fp:
 # TODO: when LogMap-LLM is a package, we'll want to discover and set LogMap the dirpath automatically somehow
 
 # %%
-# TODO: set this dirpath automatically, relatve to something fixed in the eventual LogMap-LLM
-# distribution for the LogMap-LLM python package 
-logmap_dirpath = '/Users/davidherron/research/logmap-20251230/'
+# TODO: decide the best way to set the logmap_dirpath
+#logmap_dirpath = '/Users/davidherron/research/logmap-20251230/'
+logmap_dirpath = os.path.join(os.getcwd(), 'logmap')
 
 # path to main LogMap jar file
 logmap_jar = os.path.join(logmap_dirpath, 'logmap-matcher-4.0.jar')
@@ -409,7 +409,8 @@ if config['pipeline']['consult_oracle'] == 'consult' and m_ask_df_ext is not Non
 
 
 # %%
-#m_ask_df_ext.head()
+#if m_ask_df_ext is not None:
+#    m_ask_df_ext.head()
 
 # %% [markdown]
 # ---
