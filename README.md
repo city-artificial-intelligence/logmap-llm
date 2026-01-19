@@ -29,7 +29,7 @@ The LogMap-LLM basic configuration file, `logmap-llm-config-basic.toml`, allows 
 
 The following figure shows a snapshot of a LogMap-LLM session when LogMap-LLM is used from the command-line to consult with an LLM Oracle. In this use case, the hypothetical user is reusing an existing intial LogMap alignment, but now is consulting an LLM Oracle for predictions with respect to `M_ask` --- the set of mappings to ask an Oracle.  By taking the feedback from the Oracle with respect to `M_ask` into account, LogMap is able to refine its alignment for the given alignment task.
 
-The LogMap-LLM basic configuration file, `logmap-llm-config-basic.toml`, the pipeline configuration for this use case is called **use case C**.
+In the LogMap-LLM basic configuration file, `logmap-llm-config-basic.toml`, the pipeline configuration for this use case is called **use case C**.
 
 ![LogMap-LLM](figs/use-case-config-C.png "LogMap-LLM user experience example 2")
 
