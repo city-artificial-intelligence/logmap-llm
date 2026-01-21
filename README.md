@@ -34,6 +34,17 @@ In the LogMap-LLM basic configuration file, `logmap-llm-config-basic.toml`, the 
 ![LogMap-LLM](figs/use-case-config-C.png "LogMap-LLM user experience example 2")
 
 
+### LogMap-LLM user experience example 3
+
+The following figure shows a snapshot of a LogMap-LLM session when LogMap-LLM is used to exercise LogMap's support for **local Oracles** as opposed to **LLM Oracles**. A local Oracle might be a human domain expert, or some external system other than an LLM. Local Oracle predictions with respect to the mappings in `M_ask` are supplied in one or more `.csv` files with a particular structure.
+
+In the LogMap-LLM basic configuration file, `logmap-llm-config-basic.toml`, the pipeline configuration for this use case is called **use case F**.
+
+Note that **use case A** would typically precede **use case F**. One would use **use case A** to get LogMap's mappings to ask an Oracle (`M_ask`). Once the local Oracle predictions for `M_ask` have been prepared (some time later, perhaps hours or days), one would use **use case F** to have LogMap consume the local Oracle predictions in order to refine its initial alignment.
+
+![LogMap-LLM](figs/use-case-config-F.png "LogMap-LLM user experience example 3")
+
+
 ### Additional repositories
 
 - LogMap Ontology Alignment System: [https://github.com/ernestojimenezruiz/logmap-matcher](https://github.com/ernestojimenezruiz/logmap-matcher)
