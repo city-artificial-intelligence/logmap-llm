@@ -38,7 +38,7 @@ generate_extended_mappings_to_ask_oracle = false
 logmap_parameters_dirpath = ''
 
 [oracle]
-openrouter_apikey = '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'
+openrouter_apikey = 'your api key'
 openrouter_model_name = 'arcee-ai/trinity-mini:free'
 oracle_dev_prompt_template_name = 'not in use yet; anything will do'
 oracle_user_prompt_template_name = 'one_level_of_parents_and_synonyms'
