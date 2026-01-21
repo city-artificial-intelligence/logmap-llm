@@ -21,6 +21,8 @@ tbd2 = 'tbd2'
 # reasoning_effort
 # response_format 
 #
+# max_workers
+#
 # interaction_style_name
 # - a new concept being introduced
 # - e.g. a way of switching between, say, using the OpenAI chat.completions API and

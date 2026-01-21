@@ -17,6 +17,7 @@
 # Basic imports
 
 # %%
+import os
 import os.path
 import tomllib
 import pandas as pd
@@ -107,10 +108,13 @@ jvmOptions = [
 
 # %%
 if jpype.isJVMStarted():
-    print("JVM running, version:", jpype.getJVMVersion())
-else:
-    pass
-    #print("JVM is not running!")
+    print("JPype JVM running unexpectedly; version:", jpype.getJVMVersion())
+    print()
+    print('LogMap-LLM aborting prematurely')
+    print()
+    print('LogMap-LLM session ending')
+    print()
+    raise RuntimeError('Unexpected system condition encountered')
 
 # %% [markdown]
 # Start a JVM
@@ -124,10 +128,14 @@ if not jpype.isJVMStarted():
 
 # %%
 if not jpype.isJVMStarted():
-    print("PROBLEM: JVM is not running!")
-else:
-    pass
-    #print("JVM version:", jpype.getJVMVersion())
+    print('Problem: JPype JVM not running')
+    print()
+    print('LogMap-LLM aborting prematurely')
+    print()
+    print('LogMap-LLM session ending')
+    print()
+    raise RuntimeError('Unexpected system condition encountered')
+
 
 # %% [markdown]
 # ---
@@ -176,11 +184,20 @@ generate_extended_m_ask = config['alignmentTask']['generate_extended_mappings_to
 logmap2_LogMapLLM_Interface.setExtendedQuestions4LLM(generate_extended_m_ask)
 
 # %%
-# blank for default; or just ignore this setter for default case
-#path_to_logmap_parameters = '/Users/dave/research/logmap-usage/logmap-params/'
-#path_to_logmap_parameters = ""  
-path_to_logmap_parameters = config['alignmentTask']['logmap_parameters_dirpath']
-logmap2_LogMapLLM_Interface.setPathToLogMapParameters(path_to_logmap_parameters)
+# Set dirpath where LogMap should look for its configuration file parameters.txt
+logmap_parameters_dirpath = config['alignmentTask']['logmap_parameters_dirpath']
+# If the user has configured a dirpath, we use that. Otherwise, we use the dirpath
+# for LogMap itself, which should contain a parameters.txt file.
+if logmap_parameters_dirpath == "" or logmap_parameters_dirpath is None:
+    logmap_parameters_dirpath = logmap_dirpath
+# Ensure this particular dirpath ends with a directory separator character. Without 
+# it, LogMap can't find its parameters.txt file and reverts to its default parameter
+# settings. And it writes a message to stdout telling us about that. LogMap carries
+# on without aborting, but this scenario prevents the user from configuring LogMap,
+# and the error message clutters LogMap-LLM's output.
+if not logmap_parameters_dirpath.endswith(os.sep):
+    logmap_parameters_dirpath = logmap_parameters_dirpath + os.sep
+logmap2_LogMapLLM_Interface.setPathToLogMapParameters(logmap_parameters_dirpath)
 
 # %%
 # set a dir path into which LogMap will save its 
@@ -255,11 +272,15 @@ elif config['pipeline']['align_ontologies'] == 'reuse':
     filepath = os.path.join(logmap_outputs_dir_path, filename)
     m_ask_df = pd.read_csv(filepath, sep='|', header=None)
     m_ask_df.columns = br.get_m_ask_column_names()
+elif config['pipeline']['align_ontologies'] == 'bypass':
+    print('Bypassing initial LogMap alignment')
+    m_ask_df = None
 else:
     raise ValueError(f'Value for align_ontologies not recognised: {config['pipeline']['align_ontologies']}')
 
-print()
-print(f"Number of mappings to ask an Oracle: {len(m_ask_df)}")
+if m_ask_df is not None:
+    print()
+    print(f"Number of mappings to ask an Oracle: {len(m_ask_df)}")
 
 # %% [markdown]
 # ---
@@ -270,9 +291,9 @@ print(f"Number of mappings to ask an Oracle: {len(m_ask_df)}")
 
 # %%
 print()
-print('- - - - - - - - - - - - - - - - - - - - - - - - - - - - -')
-print('Step 2: Build user prompts for mappings to ask an Oracle')
-print('- - - - - - - - - - - - - - - - - - - - - - - - - - - - -')
+print('- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -')
+print('Step 2: Build user prompts for mappings to ask an LLM Oracle')
+print('- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -')
 print()
 
 oupt_name = config['oracle']['oracle_user_prompt_template_name']
@@ -285,51 +306,37 @@ if config['pipeline']['build_oracle_prompts'] == 'build':
                                                               onto_tgt_filepath, 
                                                               m_ask_df)
 elif config['pipeline']['build_oracle_prompts'] == 'reuse':
-    print('Reusing existing Oracle user prompts ...')
+    print('Reusing existing LLM Oracle user prompts ...')
     print()
     # reuse oracle user prompts created previously and saved in a file on disk
     dirpath = config['outputs']['logmapllm_output_dirpath']
     filename = task_name + '-' + oupt_name + '-mappings_to_ask_oracle_user_prompts.json'
-    print('Loading oracle user prompts from file:')
+    print('Loading LLM Oracle user prompts from file:')
     print(filename)
     filepath = os.path.join(dirpath, filename)
     with open(filepath, 'r') as fp:
         m_ask_oracle_user_prompts = json.load(fp)
 elif config['pipeline']['build_oracle_prompts'] == 'bypass':
-    print('Bypassing use of Oracle user prompts')
+    print('Bypassing use of LLM Oracle user prompts')
     m_ask_oracle_user_prompts = None
 else:
     raise ValueError(f'Value for build_oracle_prompts not recognised: {config['pipeline']['build_oracle_prompts']}')
 
 if m_ask_oracle_user_prompts is not None:
     print()
-    print(f"Number of Oracle user prompts obtained: {len(m_ask_oracle_user_prompts)}")
+    print(f"Number of LLM Oracle user prompts obtained: {len(m_ask_oracle_user_prompts)}")
     print()
 
 if config['pipeline']['build_oracle_prompts'] == 'build':
     # save the newly built oracle user prompts to a .json file so they can be reused
     dirpath = config['outputs']['logmapllm_output_dirpath']
     filename = task_name + '-' + oupt_name + '-mappings_to_ask_oracle_user_prompts.json'
-    print('Oracle user prompts saved to file:')
+    print('LLM Oracle user prompts saved to file:')
     print(filename)
     filepath = os.path.join(dirpath, filename)
     with open(filepath, 'w') as fp:
         json.dump(m_ask_oracle_user_prompts, fp)
 
-
-# %% [markdown]
-# OPTIONAL: Inspect some of the generated Oracle user prompts
-#
-
-# %%
-#cnt = 0
-#for key, val in m_ask_oracle_user_prompts.items():
-#    cnt += 1
-#    if cnt > 2:
-#        break
-#    print(key)
-#    print(val)
-#    print()
 
 # %% [markdown]
 # ---
@@ -341,7 +348,7 @@ if config['pipeline']['build_oracle_prompts'] == 'build':
 # %%
 print()
 print('- - - - - - - - - - - - - - - - - - - - - - - - - - -')
-print("Step 3: Consult LLM Oracle for each 'mapping to ask'")
+print("Step 3: Consult Oracle for mappings to ask")
 print('- - - - - - - - - - - - - - - - - - - - - - - - - - -')
 print()
 
@@ -352,32 +359,38 @@ model_name = config['oracle']['openrouter_model_name']
 # has control without having to modify Python code
 max_workers = 2
 
+local_oracle_predictions_filepath = None
+
 if config['pipeline']['consult_oracle'] == 'consult':
     model_name = config['oracle']['openrouter_model_name']
-    print(f'Consulting LLM Oracle: {model_name}')
-    print('with the user prompts for the mappings to ask ...')
+    print(f'Consulting LLM Oracle {model_name}')
+    print('with user prompts for mappings to ask ...')
     print()
-    m_ask_df_ext = oc.consult_oracle_for_mappings_to_ask(
-        m_ask_oracle_user_prompts,
-        api_key,
-        model_name,
-        max_workers,
-        m_ask_df
-    )
+    m_ask_df_ext = oc.consult_oracle_for_mappings_to_ask(m_ask_oracle_user_prompts,
+                                                         api_key,
+                                                         model_name,
+                                                         max_workers,
+                                                         m_ask_df)
 elif config['pipeline']['consult_oracle'] == 'reuse':
-    print('Reusing existing Oracle consultation outcomes (predictions)')
+    print('Reusing existing LLM Oracle predictions')
     # reuse Oracle predictions created previously and saved in a file on disk
     dirpath = config['outputs']['logmapllm_output_dirpath']
     filename = task_name + '-' + oupt_name + '-mappings_to_ask_with_oracle_predictions.csv'
-    print('Loading Oracle predictions for the mappings_to_ask from file:')
+    print('Loading LLM Oracle predictions for the mappings_to_ask from file:')
     print(filename)
     filepath = os.path.join(dirpath, filename)
     m_ask_df_ext = pd.read_csv(filepath)
+elif config['pipeline']['consult_oracle'] == 'local':
+    local_oracle_predictions_dirpath = config['oracle']['local_oracle_predictions_dirpath']
+    print('Local Oracle prediction .csv file(s) will be loaded from directory:')
+    print(local_oracle_predictions_dirpath)
+    m_ask_df_ext = None
 elif config['pipeline']['consult_oracle'] == 'bypass':
     print('Bypassing Oracle consultations')
     m_ask_df_ext = None
 else:
     raise ValueError(f'Value for consult_oracle not recognised: {config['pipeline']['consult_oracle']}')
+
 
 if m_ask_df_ext is not None:
     preds = m_ask_df_ext['Oracle_prediction']
@@ -408,10 +421,6 @@ if config['pipeline']['consult_oracle'] == 'consult' and m_ask_df_ext is not Non
     m_ask_df_ext.to_csv(filepath)
 
 
-# %%
-#if m_ask_df_ext is not None:
-#    m_ask_df_ext.head()
-
 # %% [markdown]
 # ---
 # 
@@ -422,7 +431,7 @@ if config['pipeline']['consult_oracle'] == 'consult' and m_ask_df_ext is not Non
 # %%
 print()
 print('- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -')
-print('Step 4: Refine alignment using LLM Oracle mapping predictions')
+print('Step 4: Refine alignment using Oracle mapping predictions')
 print('- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -')
 print()
 
@@ -432,7 +441,7 @@ logmap2_LogMapLLM_Interface.setPathForOutputMappings(logmap_outputs_dir_path)
 if config['pipeline']['refine_alignment'] == 'refine':
     if m_ask_df_ext is not None:
         # refine the initial alignment using the m_ask Oracle predictions
-        print("Refining initial LogMap alignment ...")
+        print("Refining initial LogMap alignment with LLM Oracle predictions ...")
         print()
         m_ask_oracle_preds_java = br.python_oracle_mapping_predictions_2_java(m_ask_df_ext)
         print(f'Number of mappings predicted True by Oracle given to LogMap: {len(m_ask_oracle_preds_java)} ')
@@ -442,6 +451,15 @@ if config['pipeline']['refine_alignment'] == 'refine':
         mappings_java = logmap2_LogMapLLM_Interface.getLogMapMappings()
         print()
         print(f'Number of mappings in LogMap refined alignment: {len(mappings_java)}')
+    elif local_oracle_predictions_dirpath is not None:
+        # refine the initial alignment using local Oracle predictions for m_ask
+        print("Refining initial LogMap alignment with local Oracle predictions ...")
+        print()
+        logmap2_LogMapLLM_Interface.performAlignmentWithLocalOracle(local_oracle_predictions_dirpath)
+        print("Alignment complete")
+        mappings_java = logmap2_LogMapLLM_Interface.getLogMapMappings()
+        print()
+        print(f'Number of mappings in LogMap refined alignment: {len(mappings_java)}')    
     else:
         print('Step 4 bypassed due to Oracle consultation failures in Step 3')
 elif config['pipeline']['refine_alignment'] == 'bypass':

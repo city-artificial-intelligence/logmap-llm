@@ -35,13 +35,14 @@ task_name = 'anatomy'
 onto_source_filepath = '/Users/dave/research/logmap-usage/ontologies/mouse.owl'
 onto_target_filepath = '/Users/dave/research/logmap-usage/ontologies/human.owl'
 generate_extended_mappings_to_ask_oracle = false
-logmap_parameters_dirpath = '/Users/dave/research/logmap-20251230/'
+logmap_parameters_dirpath = ''
 
 [oracle]
-openrouter_apikey = 'an-LLM-API-key'
-openrouter_model_name = 'an-LLM-model-name'
+openrouter_apikey = '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'
+openrouter_model_name = 'arcee-ai/trinity-mini:free'
 oracle_dev_prompt_template_name = 'not in use yet; anything will do'
 oracle_user_prompt_template_name = 'one_level_of_parents_and_synonyms'
+local_oracle_predictions_dirpath = '/Users/dave/research/logmap-usage/local-oracle/'
 
 [outputs]
 logmapllm_output_dirpath = '/Users/dave/research/logmap-usage/logmapllm-outputs/'
@@ -49,9 +50,9 @@ logmap_initial_alignment_output_dirpath = '/Users/dave/research/logmap-usage/log
 logmap_refined_alignment_output_dirpath = '/Users/dave/research/logmap-usage/logmap-refined-alignment/'
 
 [pipeline]
-align_ontologies = 'reuse'
-build_oracle_prompts = 'build'
-consult_oracle = 'consult'
+align_ontologies = 'bypass'
+build_oracle_prompts = 'bypass'
+consult_oracle = 'local'
 refine_alignment = 'refine'
 
 # Notes regarding LogMap-LLM pipeline configuration ...
@@ -59,9 +60,9 @@ refine_alignment = 'refine'
 # Each step of the LogMap-LLM pipeline needs to be assigned one of its
 # valid values. The valid values for each pipelin step are as follows:
 #
-# align_ontologies    : 'align',   'reuse'
+# align_ontologies    : 'align',   'reuse'  'bypass'
 # build_oracle_prompts: 'build',   'reuse', 'bypass'
-# consult_oracle      : 'consult', 'reuse', 'bypass'
+# consult_oracle      : 'consult', 'reuse', 'bypass', 'local'
 # refine_alignment    : 'refine',           'bypass'
 # 
 # Value 'reuse' is an instruction to reuse a corresponding asset that was
@@ -78,7 +79,7 @@ refine_alignment = 'refine'
 # The LogMap-LLM pipeline can be configured to serve different use cases.
 # The following table indicates the most likely use case configurations.
 #
-#                       + - - - useful pipeline use case configurations - - - - +
+#                       + - - some useful pipeline use case configurations - - +
 #                            A          B           C           D           E
 # align_ontologies    : | 'align'  | 'align'   | 'reuse'   | 'reuse'   | 'reuse'
 # build_oracle_prompts: | 'bypass' | 'build'   | 'build'   | 'reuse'   | 'build'
@@ -121,4 +122,53 @@ refine_alignment = 'refine'
 #   done for a given alignment task, the use case configuration can then be
 #   switched to use case (D) for consulting multiple different LLM Oracles.
 #
+# - - - - - - - - - - - - - -
+# support for local Oracles 
+# - - - - - - - - - - - - - -
+#
+# Now we discuss useful pipeline use case configurations that allow LogMap-LLM
+# users to exercise LogMap's support for local Oracles. A local Oracle might
+# be a human domain expert, or some external system other than an LLM. 
+#
+#                       + - - more useful pipeline use case configurations - - +
+#                            F         
+# align_ontologies    : | 'bypass' | 
+# build_oracle_prompts: | 'bypass' | 
+# consult_oracle      : | 'local'  | 
+# refine_alignment    : | 'refine' | 
+#
+# Use case config (F) (local Oracle support): 
+# - The keyword 'local' tells Step 3 of the pipeline to get Oracle predictions 
+#   for M_ask not by consulting an LLM but by loading them from one or more
+#   .csv files prepared by a local Oracle of some kind.
+# - The names of local Oracle prediction .csv files need not be specified.
+#   LogMap-LLM users need only specify the directory in which they can be
+#   found, via the `local_oracle_predictions_dirpath` parameter, above. 
+#   When consult_oracle = 'local', parameter `local_oracle_predictions_dirpath`
+#   must be specified. Otherwise, this parameter is optional and can be assigned
+#   an empty string.
+# - NOTE: Before using pipeline configuration (F), one would normally run pipeline
+#   configuration (A) --- to get LogMap's 'mappings to ask' an Oracle for the
+#   alignment task under consideration. Once the local Oracle's predictions for 
+#   those 'mappings to ask' have been prepared are are ready to be processed, then 
+#   another LogMap-LLM session can be run using pipeline configuration (F), to
+#   allow LogMap to refine its initial alignment by consuming the local Oracle
+#   predictions.
+# - A local Oracle predictions .csv file should have 4 columns with the 
+#   following structure: 
+#
+#             source_entity_iri,target_entity_iri,prediction,confidence
+#
+#   example:  http://human.owl#NCI_C49191,http://mouse.owl#MA_0000702,False,0.9399113610439951
+#   
+# - Column 3, prediction, should be string boolean: True or False
+# - Column 4, confidence, should be real in [0, 1]. But LogMap does not currently take
+#   the confidence into consideration. So the value provided has no influence on LogMap's 
+#   refined alignment. For convenience, one can use a fixed value of 1.0. Or one can opt to
+#   record actual confidence values in the .csv file, say, for documentation purposes.
+# 
+# - Column headers are optional. Commonly used column headings are:
+#              Source,Target,Prediction,Confidence
+#
+
 
