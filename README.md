@@ -53,7 +53,7 @@ Note that **use case A** would typically precede **use case F**. One would use *
 
 ### References
 
-- Sviatoslav Lushnei, Dmytro Shumskyi, Severyn Shykula, Ernesto Jiménez-Ruiz, and Artur Garcez. **Large Language Models as Oracles for Ontology Alignment**. Accepted to [EACL 2026](https://2026.eacl.org/) (main conference). [[paper](https://aclanthology.org/2026.eacl-long.110/)] [[paper in arXiv](https://ernestojimenezruiz.github.io/assets/pdf/llm-oa-oracles-2025.pdf)],  [[slides] (https://drive.google.com/file/d/1Du5qCYRkyWb9wNWWr4wskNUkOKeawjD5/view?usp=sharing), [[video](https://drive.google.com/file/d/1biOs_JHO5MwX_xBQqxuKYQJHmGSboyim/view?usp=sharing)]
+- Sviatoslav Lushnei, Dmytro Shumskyi, Severyn Shykula, Ernesto Jiménez-Ruiz, and Artur Garcez. **Large Language Models as Oracles for Ontology Alignment**. Accepted to [EACL 2026](https://2026.eacl.org/) (main conference). [[paper](https://aclanthology.org/2026.eacl-long.110/)] [[paper in arXiv](https://ernestojimenezruiz.github.io/assets/pdf/llm-oa-oracles-2025.pdf)],  [[slides](https://drive.google.com/file/d/1Du5qCYRkyWb9wNWWr4wskNUkOKeawjD5/view?usp=sharing), [[video](https://drive.google.com/file/d/1biOs_JHO5MwX_xBQqxuKYQJHmGSboyim/view?usp=sharing)]
 - Ernesto Jiménez-Ruiz, Sviatoslav Lushnei, Dmytro Shumskyi, Severyn Shykula, and Artur Garcez. **LogMap Family welcomes LogMapLLM in the OAEI 2025**. OM 2025: The 20th International Workshop on Ontology Matching collocated with the 24th International Semantic Web Conference (ISWC). 2025. [[PDF](https://ceur-ws.org/Vol-4144/om2025-oaei-paper7.pdf)]
 
 
