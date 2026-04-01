@@ -2,9 +2,10 @@
 This module contains OracleConsultationManagers.
 '''
 
-from openai import OpenAI
+from openai import OpenAI, BadRequestError
 from pydantic import BaseModel
-from constants import BinaryOutputFormat, LLMCallOutput, TokensUsage
+import threading
+from constants import BinaryOutputFormat, LLMCallOutput, TokensUsage, POSITIVE_TOKENS, NEGATIVE_TOKENS
 
 
 class OracleConsultationManager_OpenAI:
@@ -43,14 +44,11 @@ class OracleConsultationManager_OpenAI:
             see __init__() method below for details
         '''
         
-        # OpenRouter's base url
-        # (Note: This is the base URL for using OpenRouter's support
-        #  for OpenAI's Chat Completions API.
-        #  The base URL for using OpenRouter's support for OpenAI's
-        #  Responses API is 'https://openrouter.ai/api/v1/responses'.)
-        # TODO: externalise the base_url in config-basic.toml and let the user decide;
-        # we don't want or need to force them to use OpenRouter
-        self.base_url = "https://openrouter.ai/api/v1"
+        # LLM API base URL.
+        # Defaults to OpenRouter's Chat Completions endpoint, but can
+        # be overridden to point at any OpenAI-compatible endpoint
+        # (e.g. a local vLLM server at http://localhost:8000/v1).
+        self.base_url = kwargs.get("base_url", "https://openrouter.ai/api/v1")
 
         if api_key is None:
             raise ValueError('OpenRouter API key required')
@@ -63,6 +61,7 @@ class OracleConsultationManager_OpenAI:
         if interaction_style_name is None:
             raise ValueError('Interaction style name required')
         self.interaction_style_name = interaction_style_name
+        self._style_lock = threading.Lock()
 
         # Instantiate a client through which to conduct actual LLM Oracle
         # interactions. The client is an OpenAI SDK client, which
@@ -98,6 +97,8 @@ class OracleConsultationManager_OpenAI:
         #   can be assembled to provide/simulate statefulness across a
         #   multi-interaction conversation.
         self.messages = []
+        self._frozen = False
+        self._frozen_messages = ()
 
         # - - - - - - - - - - -
         # LLM response format
@@ -263,34 +264,118 @@ class OracleConsultationManager_OpenAI:
         # further LLM interaction configuration flexibility
         # - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-        # TODO: At some point, review the LLM interaction configuration
-        # flexibility and decide if we need greater flexibility such
-        # as via the following mechanism which sets `self.key = value`
-        # for whatever is in kwargs. Caution: this much flexibility
-        # could also be dangerous and invite mis-configuration.
+        # Whether to enable the model's internal thinking/reasoning
+        # chain (Chain-of-Thought). Some models (e.g. Qwen3) have
+        # thinking mode enabled by default, which produces lengthy
+        # internal reasoning before the visible response. For simple
+        # binary classification tasks like ontology alignment, this
+        # wastes tokens and dramatically slows inference.
+        #
+        # Set to False to disable thinking (recommended for alignment).
+        # Set to True to leave thinking enabled.
+        # Set to None to not send the parameter (let the server decide).
+        #
+        # This is passed as extra_body to vLLM via:
+        #   chat_template_kwargs={"enable_thinking": False}
+        self.enable_thinking = kwargs.get("enable_thinking", None)
 
-        # set self.key = value
-        #for key, value in kwargs.items():
-        #    setattr(self, key, value)
+        # - - - - - - - - - - - - - - - - - - - - - - - - - -
+        # chat_template_kwargs compatibility
+        # - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+        # Whether the model's tokenizer supports chat_template_kwargs
+        # in extra_body. Mistral models served via vLLM use a
+        # proprietary "tekken" tokenizer that rejects any
+        # chat_template / chat_template_kwargs parameters, causing
+        # a 400 Bad Request error.
+        #
+        # Resolution order:
+        #   1. Explicit config override (True/False) — takes priority.
+        #   2. Auto-detection from model_name — if the model name
+        #      contains 'mistral' (case-insensitive), default to False.
+        #   3. Otherwise default to True.
+        explicit = kwargs.get("supports_chat_template_kwargs", None)
+        if explicit is not None:
+            self.supports_chat_template_kwargs = explicit
+        else:
+            self.supports_chat_template_kwargs = (
+                not self._is_mistral_family(self.model_name)
+            )
+
+    @staticmethod
+    def _is_mistral_family(model_name: str) -> bool:
+        """check whether a model name belongs to the Mistral family"""
+        return "mistral" in model_name.lower()
+        # TODO: ^^^ let's maybe consider a more managable long-term solution
+        #       this should probably be a dictionary of supported model types
+        #       or similar...
+
+    def _resolve_system_role(self) -> str:
+        """Return the appropriate role name for system-level instructions."""
+        if self.interaction_style_name == 'vllm':
+            return 'system'
+        return 'developer'
+
+    def freeze_messages(self) -> None:
+        """Freeze messages — no further modifications allowed.
+
+        call this before entering multithreaded consultation to ensure
+        the shared message list is not mutated during concurrent reads
+        """
+        self._frozen = True
+        self._frozen_messages = tuple(self.messages)
 
     def add_developer_message(self, message: str) -> None:
         '''
-        Add a developer message (an instructions message) to the list of API messages.
+        Add a system-level instruction message to the list of API messages.
 
-        Place the developer message at the front of the list. If one already exists,
+        The concrete role name is determined by _resolve_system_role():
+        'developer' for OpenRouter/OpenAI, 'system' for vLLM.
+
+        Place the message at the front of the list. If one already exists,
         overwrite it.
         '''
+        if self._frozen:
+            raise RuntimeError(
+                "Cannot modify messages after freeze_messages() — "
+                "the manager is locked for multithreaded consultation."
+            )
 
-        if len(self.messages) == 0 or self.messages[0]["role"] != "developer":
-            self.messages.insert(0, self.build_api_message("developer", message))
+        role = self._resolve_system_role()
+        system_roles = {"developer", "system"}
+
+        if len(self.messages) == 0 or self.messages[0]["role"] not in system_roles:
+            self.messages.insert(0, self.build_api_message(role, message))
         else:
-            self.messages[0] = self.build_api_message("developer", message)
+            self.messages[0] = self.build_api_message(role, message)
 
     def add_message(self, role: str, message: str) -> None:
         '''
         Add a message to the list of API messages
         '''
+        if self._frozen:
+            raise RuntimeError(
+                "Cannot modify messages after freeze_messages() — "
+                "the manager is locked for multithreaded consultation."
+            )
         self.messages.append(self.build_api_message(role, message))
+
+    # TODO: check that this is indeed working as intended
+    #       experimental results are mixed...
+    def add_few_shot_examples(self, examples: list) -> None:
+        """
+        adds few-shot example pairs as user/assistant message turns
+
+        call after add_developer_message() and before freeze_messages()
+        
+        Each example is a (user_prompt_string, assistant_response_string) tuple
+
+        The resulting message structure will be:
+            [developer] -> [user: ex1] -> [assistant: ans1] -> ... -> [user: query]
+        """
+        for user_prompt, assistant_response in examples:
+            self.add_message("user", user_prompt)
+            self.add_message("assistant", assistant_response)
 
     def set_response_format(self, response_format: BaseModel | dict) -> None:
         """Set the response format for the server."""
@@ -304,7 +389,7 @@ class OracleConsultationManager_OpenAI:
         """Set the style to be used for interacting with the LLM Oracle."""
         self.interaction_style_name = interaction_style_name
 
-    def consult_oracle(self, message):
+    def consult_oracle(self, message, developer_override=None, per_query_few_shot=None):
         '''
         Consult an Oracle using a particular style or approach.
         
@@ -327,96 +412,218 @@ class OracleConsultationManager_OpenAI:
         and subject to breaking changes. One day, when it has matured,
         there may be reason to support it as well.
 
+        --
+
+        JD. Just a quick note on the above. In our case, isn't statelessness
+        desirable? We want each oracle decision to be an independent binary
+        classification (where we're solely responsible for managing the context
+        and chat history), right? There may be some use cases though and the
+        design philosophy makes sense!
+        
+        On the design philosophy point, note that a lot of the code included in
+        this snapshot is experimental; so any changes to the original code are
+        temporary for the moment. The plan is to clean it up, retain only what is
+        neccesary, carefully seperate out each feature and merge them in one by one.
+        We can produce clear documentation simultaneously as the process is undertaken.
+
+        --
+
+        (support added for vLLM, but the manner in which this has been accomplished
+         cn probably be improved to better align it to the above design philosophy)
+
+        On the first call with style 'auto', discovers whether the endpoint supports 
+        parse() (OpenRouter/OpenAI) or needs create() (vLLM/local), then locks in that 
+        style for all subsequent calls — no per-request trial and error.
+
         Parameters
         ----------
         message : str
             A user prompt (aka user message).
+        developer_override : str, optional
+            If provided, replaces the developer/system message for this
+            call only.  Used for entity-type-aware developer prompts
+            (e.g. property or instance developer prompts).
+        per_query_few_shot : list of (str, str) tuples, optional
+            Per-query few-shot examples for hard-similar strategy.
+            Each tuple is (user_prompt, assistant_response).  When
+            provided, these are injected between the developer message
+            and the query for this call only (not part of frozen prefix).
 
         Returns
         -------
         LLMCallOutput : Wrapper for the response message, usage, logprobs, and parsed output.
         '''
+        if self.interaction_style_name == 'auto':
+            # first call: discover what works (thread-safe with double-check)
+            with self._style_lock:
+                if self.interaction_style_name == 'auto':
+                    try:
+                        result = self._consult_via_parse(message, developer_override, per_query_few_shot)
+                        self.interaction_style_name = 'openrouter'
+                        return result
+                    except Exception:
+                        result = self._consult_via_create(message, developer_override, per_query_few_shot)
+                        self.interaction_style_name = 'vllm'
+                        return result
+                
+                # another thread resolved the style while we waited; fall through to the dispatch below
 
-        if self.interaction_style_name == 'openai_chat_completions_parse_structured_output':
-             return self.consult_oracle_openai_chat_completions_parse_structured_output(message)
+        if self.interaction_style_name in (
+            'openrouter',
+            'openai_chat_completions_parse_structured_output',
+        ):
+            return self._consult_via_parse(message, developer_override, per_query_few_shot)
+
+        elif self.interaction_style_name == 'vllm':
+            return self._consult_via_create(message, developer_override, per_query_few_shot)
+
         else:
-            raise ValueError(f'Interaction style name not recognised: {self.interaction_style_name}')
+            raise ValueError(f"Interaction style not recognised: {self.interaction_style_name}")
 
 
-    def consult_oracle_openai_chat_completions_parse_structured_output(self, prompt):
-        '''
-        Consult an LLM Oracle using OpenAI's 'chat completions' API and
-        structured outputs.
-        
-        For structured outputs, we use the API's parse() method rather
-        than its create() method, and we specify a 'response format'
-        defined using a class that specialises the 'pydantic' BaseModel 
-        class.
+    def _build_base_kwargs(self, prompt, developer_override=None, per_query_few_shot=None):
+        '''Build the common kwargs dict shared by both parse() and create() paths.
 
         Parameters
         ----------
         prompt : str
-            Text content for a user api message.
-
-        Returns
-        -------
-        LLMCallOutput : 
-            Wrapper for the response message, usage, logprobs, and parsed output.
+            The user prompt to append.
+        developer_override : str, optional
+            If provided, replaces the developer/system message content in the
+            frozen messages for this call only.  The original frozen messages
+            are not mutated (a shallow copy is used).  Thread-safe.
+        per_query_few_shot : list of (str, str) tuples, optional
+            Per-query few-shot examples (hard-similar strategy).  When
+            provided, these are injected after the developer message and
+            before the query prompt.  Thread-safe (creates a new list).
         '''
-        try:
-            # finalise the list of api messages for the interaction with an LLM
-            messages = [*self.messages, self.build_api_message("user", prompt)]
+        msgs = list(self._frozen_messages if self._frozen else self.messages)
 
-            # assemble the configuration parameter settings
-            # for the LLM interaction
-            llm_interaction_kwargs = {
-                "model": self.model_name,
-                "messages": messages,
-                "temperature": self.temperature,
-                "top_p": self.top_p,
-                "reasoning_effort": self.reasoning_effort,
-                "max_completion_tokens": self.max_completion_tokens,
-                "response_format": self.response_format,
-                "logprobs": self.logprobs,
-                "top_logprobs": self.top_logprobs
+        # per-call developer prompt substitution (entity-type-aware)
+        if developer_override is not None and msgs:
+            system_roles = {"developer", "system"}
+            if msgs[0]["role"] in system_roles:
+                msgs[0] = self.build_api_message(msgs[0]["role"], developer_override)
+
+        # per-query few-shot injection (hard-similar strategy)
+        if per_query_few_shot:
+            for user_prompt, assistant_response in per_query_few_shot:
+                msgs.append(self.build_api_message("user", user_prompt))
+                msgs.append(self.build_api_message("assistant", assistant_response))
+
+        messages = [*msgs, self.build_api_message("user", prompt)]
+
+        kwargs = {
+            "model": self.model_name,
+            "messages": messages,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "logprobs": self.logprobs,
+            "top_logprobs": self.top_logprobs,
+        }
+
+        # For models with built-in thinking/CoT (e.g. Qwen3),
+        # pass enable_thinking via extra_body to control whether
+        # the model produces internal reasoning chains.
+        #
+        # Skipped when supports_chat_template_kwargs is False (e.g.
+        # Mistral models whose tekken tokenizer rejects the parameter).
+        if self.enable_thinking is not None and self.supports_chat_template_kwargs:
+            kwargs["extra_body"] = {
+                "chat_template_kwargs": {
+                    "enable_thinking": self.enable_thinking
+                }
             }
 
-            # consult the LLM Oracle regarding the current mapping 
-            response = self.client.chat.completions.parse(**llm_interaction_kwargs)
+        return kwargs
 
-            #
-            # extract and prepare the elements of the LLM's response
-            # that are of interest
-            #
+    def _extract_response(self, response, parsed_output):
+        '''Extract the common fields from an API response into an LLMCallOutput.'''
+        output_message = response.choices[0].message.content
 
-            # get the raw response message from the LLM Oracle; this raw 
-            # response may not satisfy our requirement for a one-word, 
-            # binary, true/false prediction regarding the candidate mapping;
-            # we focus more intently on the parsed_output(see below)
-            output_message = response.choices[0].message.content
+        usage = TokensUsage(
+            input_tokens=response.usage.prompt_tokens,
+            output_tokens=response.usage.completion_tokens,
+        )
+        try:
+            logprobs = response.choices[0].logprobs.model_dump()["content"]
+        except AttributeError:
+            logprobs = []
 
-            usage = TokensUsage(
-                input_tokens=response.usage.prompt_tokens,
-                output_tokens=response.usage.completion_tokens,
-            )
-            try:
-                logprobs = response.choices[0].logprobs.model_dump()["content"]
-            except AttributeError:
-                logprobs = []
-            
-            parsed_output = response.choices[0].message.parsed
+        return LLMCallOutput(
+            message=output_message,
+            usage=usage,
+            logprobs=logprobs,
+            parsed=parsed_output,
+        )
 
-            return LLMCallOutput(message=output_message, 
-                                 usage=usage, 
-                                 logprobs=logprobs, 
-                                 parsed=parsed_output)
+    def _consult_via_parse(self, prompt, developer_override=None, per_query_few_shot=None):
+        '''
+        Consult via OpenAI's parse() method with Pydantic structured output.
+        Works with OpenRouter and OpenAI endpoints.
+        '''
+        kwargs = self._build_base_kwargs(prompt, developer_override, per_query_few_shot)
+        kwargs["max_completion_tokens"] = self.max_completion_tokens
+        kwargs["response_format"] = self.response_format
 
-        except Exception as e:
-            raise e
+        # reasoning_effort is OpenAI-specific
+        if self.reasoning_effort and self.reasoning_effort != 'none':
+            kwargs["reasoning_effort"] = self.reasoning_effort
+
+        response = self.client.chat.completions.parse(**kwargs)
+        parsed_output = response.choices[0].message.parsed
+
+        return self._extract_response(response, parsed_output)
+
+    def _consult_via_create(self, prompt, developer_override=None, per_query_few_shot=None):
+        '''
+        Consult via OpenAI's create() method with JSON schema guided decoding.
+        Works with vLLM and other OpenAI-compatible local endpoints.
+        '''
+        import json as _json
+
+        kwargs = self._build_base_kwargs(prompt, developer_override, per_query_few_shot)
+
+        # vLLM uses max_tokens rather than max_completion_tokens
+        kwargs["max_tokens"] = self.max_completion_tokens
+
+        # convert Pydantic model to JSON schema for response_format
+        if hasattr(self.response_format, 'model_json_schema'):
+            schema = self.response_format.model_json_schema()
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": self.response_format.__name__,
+                    "strict": True,
+                    "schema": schema,
+                }
+            }
+        else:
+            kwargs["response_format"] = self.response_format
+
+        response = self.client.chat.completions.create(**kwargs)
+
+        # pParse the JSON response manually
+        raw_content = response.choices[0].message.content
+        try:
+            parsed_dict = _json.loads(raw_content)
+            parsed_output = self.response_format(**parsed_dict)
+        except (_json.JSONDecodeError, Exception):
+            lower = raw_content.strip().lower()
+            if any(tok in lower for tok in POSITIVE_TOKENS):
+                parsed_output = BinaryOutputFormat(answer=True)
+            elif any(tok in lower for tok in NEGATIVE_TOKENS):
+                parsed_output = BinaryOutputFormat(answer=False)
+            else:
+                raise ValueError(f"Could not parse LLM response as positive/negative: {raw_content[:200]}")
+
+        return self._extract_response(response, parsed_output)
 
 
     def clear_messages(self) -> None:
         '''
-        Clear all messages (developer and user)
+        Clear all messages (developer and user) and unfreeze.
         '''
+        self._frozen = False
+        self._frozen_messages = ()
         self.messages = []

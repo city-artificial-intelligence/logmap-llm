@@ -5,6 +5,8 @@ There are many methods and systems to tackle the ontology alignment problem, yet
 
 Current efforts are focusing on the creation of an integrated LogMapLLM pipeline (this repository).
 
+*(Note, this branch contains WiP + experimental code; we plan to isolate each feature and carefully merge back into main)*
+
 ### LogMap-LLM conceptual architecture
 
 Here is a conceptual view of LogMap-LLM:
@@ -43,6 +45,11 @@ In the LogMap-LLM basic configuration file, `logmap-llm-config-basic.toml`, the 
 Note that **use case A** would typically precede **use case F**. One would use **use case A** to get LogMap's mappings to ask an Oracle (`M_ask`). Once the local Oracle predictions for `M_ask` have been prepared (some time later, perhaps hours or days), one would use **use case F** to have LogMap consume the local Oracle predictions in order to refine its initial alignment.
 
 ![LogMap-LLM](figs/use-case-config-F.png "LogMap-LLM user experience example 3")
+
+
+### LogMap-LLM _snapshot/march-31-26_ examples
+
+An example run for the KG track, which utilises class, instance and property prompts, is provided as `example_run_*.png` images in the [figs directory](./figs/example_run_1.png).
 
 
 ### Additional repositories

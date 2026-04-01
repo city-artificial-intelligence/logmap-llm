@@ -1,0 +1,47 @@
+#
+# LogMap-LLM Configuration — Conference Track Example
+#
+# Task:     conference-conference-iasted
+# Track:    conference
+# Model:    Qwen/Qwen3-32B
+# Prompt:   one_level_of_parents_and_synonyms
+# Property: prop_domain_range
+# Pipeline: reuse-alignment
+#
+
+[alignmentTask]
+task_name = 'conference-conference-iasted'
+track = 'conference'
+onto_source_filepath = '/home/jon/logmap_most_recent/datasets/conference/ontologies/Conference.owl'
+onto_target_filepath = '/home/jon/logmap_most_recent/datasets/conference/ontologies/iasted.owl'
+generate_extended_mappings_to_ask_oracle = false
+logmap_parameters_dirpath = ''
+
+[oracle]
+openrouter_apikey = 'EMPTY'
+openrouter_model_name = 'Qwen/Qwen3-32B'
+base_url = 'http://localhost:8000/v1'
+enable_thinking = false
+interaction_style = 'vllm'
+oracle_dev_prompt_template_name = 'conference_class'
+oracle_user_prompt_template_name = 'one_level_of_parents_and_synonyms'
+oracle_property_prompt_template_name = 'prop_domain_range'
+oracle_property_dev_prompt_template_name = 'property_equivalence'
+local_oracle_predictions_dirpath = '/home/jon/logmap_most_recent/results/conference-conference-iasted/Qwen_Qwen3-32B/one_level_of_parents_and_synonyms/local-oracle'
+
+[outputs]
+logmapllm_output_dirpath = '/home/jon/logmap_most_recent/results/conference-conference-iasted/Qwen_Qwen3-32B/one_level_of_parents_and_synonyms/logmapllm-outputs'
+logmap_initial_alignment_output_dirpath = '/home/jon/logmap_most_recent/results/conference-conference-iasted/Qwen_Qwen3-32B/one_level_of_parents_and_synonyms/logmap-initial-alignment'
+logmap_refined_alignment_output_dirpath = '/home/jon/logmap_most_recent/results/conference-conference-iasted/Qwen_Qwen3-32B/one_level_of_parents_and_synonyms/logmap-refined-alignment'
+
+[pipeline]
+align_ontologies = 'reuse'
+build_oracle_prompts = 'build'
+consult_oracle = 'consult'
+refine_alignment = 'refine'
+
+[evaluation]
+evaluate = true
+reference_alignment_path = '/home/jon/logmap_most_recent/datasets/conference/refs_equiv/conference-iasted.tsv'
+metrics = ['global', 'oracle']
+force_custom_eval = true

@@ -1,0 +1,41 @@
+#
+# LogMap-LLM Configuration - Anatomy Example
+#
+# Task:     Mouse Anatomy to Human Anatomy (OAEI Anatomy track)
+# Model:    Qwen/Qwen3-32B
+# Prompt:   sub_labels_only
+# Pipeline: reuse-alignment  Reuse existing LogMap alignment, rebuild prompts and consult
+#
+
+[alignmentTask]
+task_name = 'anatomy'
+onto_source_filepath = '/home/jon/logmap_most_recent/datasets/oracles/Pipeline-Code-and-Runs/data/anatomy/human-mouse/mouse.owl'
+onto_target_filepath = '/home/jon/logmap_most_recent/datasets/oracles/Pipeline-Code-and-Runs/data/anatomy/human-mouse/human.owl'
+generate_extended_mappings_to_ask_oracle = false
+logmap_parameters_dirpath = ''
+
+[oracle]
+openrouter_apikey = 'EMPTY'
+openrouter_model_name = 'Qwen/Qwen3-32B'
+base_url = 'http://localhost:8000/v1'
+enable_thinking = false
+interaction_style = 'vllm'
+oracle_dev_prompt_template_name = 'class_subsumption'
+oracle_user_prompt_template_name = 'sub_labels_only'
+local_oracle_predictions_dirpath = '/home/jon/logmap_most_recent/results/anatomy/Qwen_Qwen3-32B/sub_labels_only/local-oracle'
+
+[outputs]
+logmapllm_output_dirpath = '/home/jon/logmap_most_recent/results/anatomy/Qwen_Qwen3-32B/sub_labels_only/logmapllm-outputs'
+logmap_initial_alignment_output_dirpath = '/home/jon/logmap_most_recent/results/anatomy/Qwen_Qwen3-32B/sub_labels_only/logmap-initial-alignment'
+logmap_refined_alignment_output_dirpath = '/home/jon/logmap_most_recent/results/anatomy/Qwen_Qwen3-32B/sub_labels_only/logmap-refined-alignment'
+
+[pipeline]
+align_ontologies = 'reuse'
+build_oracle_prompts = 'build'
+consult_oracle = 'consult'
+refine_alignment = 'refine'
+
+[evaluation]
+evaluate = true
+reference_alignment_path = '/home/jon/logmap_most_recent/datasets/oracles/Pipeline-Code-and-Runs/data/anatomy/human-mouse/refs_equiv/full.tsv'
+metrics = ['global', 'oracle']
