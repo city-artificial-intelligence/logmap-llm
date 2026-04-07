@@ -95,7 +95,13 @@ class AnnotationURIs:
 
 class OntologyAccess:
     
-    def __init__(self, urionto: str, annotate_on_init: bool = True, cache=None) -> None:
+    def __init__(
+        self,
+        urionto: str,
+        annotate_on_init: bool = True,
+        cache=None
+    ) -> None:
+        
         logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.WARNING)
         self.urionto = str(urionto)
         self._cache = cache
@@ -106,12 +112,22 @@ class OntologyAccess:
             self.load_ontology()
             self.indexAnnotations()
 
+    ###
+    # Methods:
+    ###
+
     def get_ontology_iri(self) -> str:
         return self.urionto
 
-    def load_ontology(self, reasoner: Reasoner = Reasoner.NONE, memory_java: str = "10240") -> None:
+    def load_ontology(
+        self,
+        reasoner: Reasoner = Reasoner.NONE,
+        memory_java: str = "10240"
+    ) -> None:
+        
         self.onto = self.world.get_ontology(self.urionto).load()
         owlready2.JAVA_MEMORY = memory_java
+
         # DH: If we set log level here, then the 2nd call we make
         # to this function, to load the 2nd (target) ontology, writes
         # a lot of '* Owlready2 * ...' messages to the console, which
@@ -151,6 +167,7 @@ class OntologyAccess:
                 logging.info("Classifying with HermiT failed.")
 
         self.graph = self.world.as_rdflib_graph()
+        
         # DH: This used to be a logging.info() statement. But for
         # LogMap-LLM we have promoted it to a print() statement, so
         # the user can always see how big the ontology is that is
@@ -159,10 +176,24 @@ class OntologyAccess:
         # O(1) URI lookup indices
         self._uri_to_class = {cls.iri: cls for cls in self.onto.classes()}
         self._uri_to_entity = dict(self._uri_to_class)
+        self._uri_to_property = {}
+        self._uri_to_individual = {}
+        
         for prop in self.onto.properties():
-            self._uri_to_entity[prop.iri] = prop
+            self._uri_to_entity[prop.iri] = prop     # should we store all URIs in the same dict, perhaps?
+            self._uri_to_property[prop.iri] = prop   # TODO: revisit ^^^
+        
+        self._uri_to_individual = {}
+        for ind in self.onto.individuals():
+            if hasattr(ind, 'iri') and ind.iri:
+                self._uri_to_individual[ind.iri] = ind
 
         print(f"There are {len(self.graph)} triples in the ontology")
+        
+        print(f"Indexed {len(self._uri_to_class)} classes.")
+        print(f"Indexed {len(self._uri_to_property)} properties.")
+        print(f"Indexed {len(self._uri_to_individual)} individuals.")
+
 
     def getOntology(self) -> owlready2.Ontology:
         return self.onto
@@ -356,8 +387,242 @@ class OntologyAccess:
             return set()
         return self.allEntityAnnotations[entity.iri]
 
-    def getPrefferedLabels(self, entity: owlready2.Thing) -> set[str]:
+    def getPreferredLabels(self, entity) -> set[str]:
         if entity.iri not in self.preferredLabels:
             return set()
         return self.preferredLabels[entity.iri]
 
+    # to ensure backwards compatability
+    getPrefferedLabels = getPreferredLabels
+
+    ###
+    # PROPERTY-SPECIFIC LOOKUPS
+    ###
+
+    def getPropertyByURI(self, uri: str):
+        return self._uri_to_property.get(uri)
+
+    def isProperty(self, uri: str) -> bool:
+        return uri in self._uri_to_property
+
+    def getDomainNames(self, prop) -> set[str]:
+        names = set()
+        try:
+            for cls in prop.domain:
+                if hasattr(cls, 'iri'):
+                    labels = self.getPreferredLabels(cls)
+                    if labels:
+                        names.update(labels)
+                    else:
+                        names.add(str(cls.name))
+        except Exception:
+            pass
+        return names
+
+    def getRangeNames(self, prop) -> set[str]:
+        names = set()
+        try:
+            for cls in prop.range:
+                if hasattr(cls, 'iri'):
+                    labels = self.getPreferredLabels(cls)
+                    if labels:
+                        names.update(labels)
+                    else:
+                        names.add(str(cls.name))
+        except Exception:
+            pass
+        return names
+
+    def getInverseName(self, prop) -> str | None:
+        inv = getattr(prop, 'inverse_property', None)
+        if inv is None:
+            return None
+        labels = self.getPreferredLabels(inv)
+        return next(iter(labels), None) if labels else str(inv.name)
+    
+    ###
+    # INDIVIDUAL-SPECIIFC LOOKUPS
+    ###
+
+    def getIndividualByURI(self, uri: str):
+        return self._uri_to_individual.get(uri)
+
+    def isIndividual(self, uri: str) -> bool:
+        return uri in self._uri_to_individual
+
+    def getLabelsForURI(self, uri: str) -> list[str]:
+        """fetch rdfs:label values for any URI via the rdflib graph"""
+        from rdflib import URIRef, RDFS # lazy import
+        labels = []
+        
+        for _, _, obj in self.graph.triples((URIRef(uri), RDFS.label, None)):
+            label_str = str(obj).strip()
+            if label_str:
+                labels.append(label_str)
+        
+        if not labels:
+            if '#' in uri:
+                labels.append(uri.rsplit('#', 1)[-1])
+            elif '/' in uri:
+                labels.append(uri.rsplit('/', 1)[-1])
+
+        return labels
+    
+    ###
+    # INSTANCE-SPECIFIC (adv.) METHODS
+    ###
+
+    def getInstanceContext(self, uri: str) -> dict:
+        """
+        Fetch structured context for an individual via rdflib
+
+        Returns dict with keys: 
+        uri, labels, types, abstract, categories, data_properties, object_properties
+
+        Used in building prompts that use 'the full context'.
+        
+        NOTE (TODO): We should probably consider using LogMap itself as our OBDA layer
+        in which case, logic similar to this can be used to resolve individual types, 
+        categories, obj/data props, etc. For e.g., abstracts, we might consider specific
+        parameters in parameters.txt that allow for extracting (or accessing) such predicates
+        """
+        # lazy import:
+        from rdflib import URIRef, RDF, RDFS, Literal, Namespace
+        
+        # namespace specs:
+        DCT = Namespace("http://purl.org/dc/terms/")
+        DBKWIK = Namespace("http://dbkwik.webdatacommons.org/ontology/")
+
+        subject = URIRef(uri)
+        labels = self.getLabelsForURI(uri)
+
+        # fetch types:
+        types = []
+        for _, _, obj in self.graph.triples((subject, RDF.type, None)):
+            type_uri = str(obj)
+            type_labels = self.getLabelsForURI(type_uri)
+            type_label = type_labels[0] if type_labels else type_uri.rsplit('/', 1)[-1]
+            types.append({"uri": type_uri, "label": type_label})
+
+        # fetch abstracts (track-specific):
+        abstract = None
+        for _, _, obj in self.graph.triples((subject, DBKWIK.abstract, None)):
+            abstract = str(obj)
+            break
+        
+        if abstract is None:
+            for _, _, obj in self.graph.triples((subject, RDFS.comment, None)):
+                abstract = str(obj)
+                break
+
+        # fetch categories:
+        categories = []
+        for _, _, obj in self.graph.triples((subject, DCT.subject, None)):
+            cat_labels = self.getLabelsForURI(str(obj))
+            categories.extend(cat_labels if cat_labels else [str(obj).rsplit('/', 1)[-1]])
+
+        # fetch predicates:
+        handled_predicates = {
+            str(RDF.type), str(RDFS.label), str(RDFS.comment),
+            str(DCT.subject), str(DBKWIK.abstract),
+        }
+        data_properties = []
+        object_properties = []
+
+        for _, pred, obj in self.graph.triples((subject, None, None)):
+            pred_uri = str(pred)
+            if pred_uri in handled_predicates:
+                continue
+
+            pred_labels = self.getLabelsForURI(pred_uri)
+            pred_label = pred_labels[0] if pred_labels else pred_uri.rsplit('/', 1)[-1]
+
+            if isinstance(obj, Literal):
+                datatype = str(obj.datatype) if obj.datatype else "string"
+                if datatype.startswith("http://www.w3.org/2001/XMLSchema#"):
+                    datatype = datatype.rsplit('#', 1)[-1]
+                data_properties.append({
+                    "predicate_uri": pred_uri,
+                    "predicate_label": pred_label,
+                    "value": str(obj),
+                    "datatype": datatype,
+                })
+            else:
+                obj_uri = str(obj)
+                obj_labels = self.getLabelsForURI(obj_uri)
+                object_properties.append({
+                    "predicate_uri": pred_uri,
+                    "predicate_label": pred_label,
+                    "object_uri": obj_uri,
+                    "object_label": obj_labels[0] if obj_labels else obj_uri.rsplit('/', 1)[-1],
+                })
+
+        return {
+            "uri": uri,
+            "labels": labels,
+            "types": types,
+            "abstract": abstract,
+            "categories": categories,
+            "data_properties": data_properties,
+            "object_properties": object_properties,
+        }
+    
+
+    def compute_predicate_entropies(self, uri_pattern="/property/") -> dict:
+        """
+        computes the Shannon entropy of value distributions (for matchable predicates)
+        A higher entropy => the predicate is more discriminating for entity resolution
+        """
+        import math
+        from rdflib import URIRef
+        from collections import Counter
+
+        predicate_values: dict[str, Counter] = {}
+        
+        for s, p, o in self.graph.triples((None, None, None)):
+            p_uri = str(p)
+            if uri_pattern not in p_uri:
+                continue
+            if p_uri not in predicate_values:
+                predicate_values[p_uri] = Counter()
+            predicate_values[p_uri][str(o)] += 1
+
+        entropies = {}
+
+        for pred_uri, value_counts in predicate_values.items():
+            total = sum(value_counts.values())
+            if total <= 1:
+                entropies[pred_uri] = 0.0
+                continue
+            entropy = 0.0
+            for count in value_counts.values():
+                p = count / total
+                if p > 0:
+                    entropy -= p * math.log2(p)
+            entropies[pred_uri] = entropy
+
+        return entropies
+    
+    
+    def hasSubjectInGraph(self, uri: str) -> bool:
+        """
+        Check whether *uri* appears as a subject in the rdflib graph.
+        fallback for KG track instances not enumerated by owlready2's individuals()
+        (as is the case in OAEI KG 2025)
+        """
+        from rdflib import URIRef
+        for _ in self.graph.triples((URIRef(uri), None, None)):
+            return True
+        return False
+    
+
+    ###
+    # STUBS
+    # NOTE: whether these need implementing depends on the final set of prompts we deicde to use
+    ###
+
+    def getClassRestrictions(self, cls):
+        ...
+
+    def getClassRelationalSignature(self, cls):
+        ...
