@@ -4,8 +4,8 @@ This module contains OracleConsultationManagers.
 
 from openai import OpenAI
 from pydantic import BaseModel
-from constants import BinaryOutputFormat, LLMCallOutput, TokensUsage
-
+from logmap_llm.constants import BinaryOutputFormat, LLMCallOutput, TokensUsage
+import json
 
 class OracleConsultationManager_OpenAI:
     '''
@@ -50,14 +50,14 @@ class OracleConsultationManager_OpenAI:
         #  Responses API is 'https://openrouter.ai/api/v1/responses'.)
         # TODO: externalise the base_url in config-basic.toml and let the user decide;
         # we don't want or need to force them to use OpenRouter
-        self.base_url = "https://openrouter.ai/api/v1"
+        self.base_url = kwargs.get("base_url", "https://openrouter.ai/api/v1")
 
         if api_key is None:
-            raise ValueError('OpenRouter API key required')
+            raise ValueError('API key required')
         self.api_key = api_key
 
         if model_name is None:
-            raise ValueError('OpenRouter LLM model name required')
+            raise ValueError('LLM model name required')
         self.model_name = model_name
 
         if interaction_style_name is None:
@@ -273,6 +273,9 @@ class OracleConsultationManager_OpenAI:
         #for key, value in kwargs.items():
         #    setattr(self, key, value)
 
+        self.enable_thinking = kwargs.get("enable_thinking", None)
+
+
     def add_developer_message(self, message: str) -> None:
         '''
         Add a developer message (an instructions message) to the list of API messages.
@@ -337,82 +340,124 @@ class OracleConsultationManager_OpenAI:
         LLMCallOutput : Wrapper for the response message, usage, logprobs, and parsed output.
         '''
 
-        if self.interaction_style_name == 'openai_chat_completions_parse_structured_output':
+        open_router_aliases = [
+            'openrouter',
+            'openai_chat_completions_parse_structured_output',
+        ]
+
+        if self.interaction_style_name in open_router_aliases:
              return self.consult_oracle_openai_chat_completions_parse_structured_output(message)
+        elif self.interaction_style_name == 'vllm':
+            return self.consult_oracle_openai_chat_completions_create_output(message)
         else:
             raise ValueError(f'Interaction style name not recognised: {self.interaction_style_name}')
 
 
-    def consult_oracle_openai_chat_completions_parse_structured_output(self, prompt):
-        '''
-        Consult an LLM Oracle using OpenAI's 'chat completions' API and
-        structured outputs.
-        
-        For structured outputs, we use the API's parse() method rather
-        than its create() method, and we specify a 'response format'
-        defined using a class that specialises the 'pydantic' BaseModel 
-        class.
-
-        Parameters
-        ----------
-        prompt : str
-            Text content for a user api message.
-
-        Returns
-        -------
-        LLMCallOutput : 
-            Wrapper for the response message, usage, logprobs, and parsed output.
-        '''
-        try:
-            # finalise the list of api messages for the interaction with an LLM
-            messages = [*self.messages, self.build_api_message("user", prompt)]
-
-            # assemble the configuration parameter settings
-            # for the LLM interaction
-            llm_interaction_kwargs = {
-                "model": self.model_name,
-                "messages": messages,
-                "temperature": self.temperature,
-                "top_p": self.top_p,
-                "reasoning_effort": self.reasoning_effort,
-                "max_completion_tokens": self.max_completion_tokens,
-                "response_format": self.response_format,
-                "logprobs": self.logprobs,
-                "top_logprobs": self.top_logprobs
+    def build_base_kwargs(self, prompt):
+        """
+        Build the common kwargs dict for LLM interaction
+        """
+        messages = [*self.messages, self.build_api_message("user", prompt)]
+        kwargs = {
+            "model": self.model_name,
+            "messages": messages,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "logprobs": self.logprobs,
+            "top_logprobs": self.top_logprobs,
+        }
+        if self.enable_thinking is not None:
+            kwargs["extra_body"] = {
+                "chat_template_kwargs": {
+                    "enable_thinking": self.enable_thinking
+                }
             }
 
-            # consult the LLM Oracle regarding the current mapping 
+        return kwargs
+
+    def extract_response(self, response, parsed_output):
+        """
+        Extract common fields from an API response into LLMCallOutput
+        """
+        output_message = response.choices[0].message.content
+
+        usage = TokensUsage(
+            input_tokens=response.usage.prompt_tokens,
+            output_tokens=response.usage.completion_tokens,
+        )
+        try:
+            logprobs = response.choices[0].logprobs.model_dump()["content"]
+        except AttributeError:
+            logprobs = []
+
+        return LLMCallOutput(
+            message=output_message,
+            usage=usage,
+            logprobs=logprobs,
+            parsed=parsed_output,
+        )
+
+
+    def consult_oracle_openai_chat_completions_parse_structured_output(self, prompt):
+        """
+        Consult via OpenAI's parse() method with structured outputs
+        """
+        try:
+            llm_interaction_kwargs = self.build_base_kwargs(prompt)
+            llm_interaction_kwargs["max_completion_tokens"] = self.max_completion_tokens
+            llm_interaction_kwargs["response_format"] = self.response_format
+
+            if self.reasoning_effort and self.reasoning_effort != 'none':
+                llm_interaction_kwargs["reasoning_effort"] = self.reasoning_effort
+
             response = self.client.chat.completions.parse(**llm_interaction_kwargs)
-
-            #
-            # extract and prepare the elements of the LLM's response
-            # that are of interest
-            #
-
-            # get the raw response message from the LLM Oracle; this raw 
-            # response may not satisfy our requirement for a one-word, 
-            # binary, true/false prediction regarding the candidate mapping;
-            # we focus more intently on the parsed_output(see below)
-            output_message = response.choices[0].message.content
-
-            usage = TokensUsage(
-                input_tokens=response.usage.prompt_tokens,
-                output_tokens=response.usage.completion_tokens,
-            )
-            try:
-                logprobs = response.choices[0].logprobs.model_dump()["content"]
-            except AttributeError:
-                logprobs = []
-            
             parsed_output = response.choices[0].message.parsed
 
-            return LLMCallOutput(message=output_message, 
-                                 usage=usage, 
-                                 logprobs=logprobs, 
-                                 parsed=parsed_output)
+            return self.extract_response(response, parsed_output)
 
         except Exception as e:
             raise e
+
+
+
+    def consult_oracle_openai_chat_completions_create_output(self, prompt):
+        """
+        
+        """
+        llm_interaction_kwargs = self.build_base_kwargs(prompt)
+        llm_interaction_kwargs["max_tokens"] = self.max_completion_tokens
+
+        if hasattr(self.response_format, 'model_json_schema'):
+            schema = self.response_format.model_json_schema()
+            llm_interaction_kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": self.response_format.__name__,
+                    "strict": True,
+                    "schema": schema,
+                },
+            }
+        else:
+            llm_interaction_kwargs["response_format"] = self.response_format
+
+        response = self.client.chat.completions.create(**llm_interaction_kwargs)
+
+        raw_content = response.choices[0].message.content
+
+        try:
+            parsed_dict = json.loads(raw_content)
+            parsed_output = self.response_format(**parsed_dict)
+        except (json.JSONDecodeError, Exception):
+            lower = raw_content.strip().lower()
+            if 'true' in lower:
+                parsed_output = BinaryOutputFormat(answer=True)
+            elif 'false' in lower:
+                parsed_output = BinaryOutputFormat(answer=False)
+            else:
+                raise ValueError(f"Could not parse LLM response as true/false: {raw_content[:200]}")
+
+        return self.extract_response(response, parsed_output)
+
 
 
     def clear_messages(self) -> None:
@@ -420,3 +465,96 @@ class OracleConsultationManager_OpenAI:
         Clear all messages (developer and user)
         '''
         self.messages = []
+
+
+
+    # def consult_oracle_openai_chat_completions_parse_structured_output(self, prompt):
+    #     '''
+    #     Consult an LLM Oracle using OpenAI's 'chat completions' API and
+    #     structured outputs.
+        
+    #     For structured outputs, we use the API's parse() method rather
+    #     than its create() method, and we specify a 'response format'
+    #     defined using a class that specialises the 'pydantic' BaseModel 
+    #     class.
+
+    #     Parameters
+    #     ----------
+    #     prompt : str
+    #         Text content for a user api message.
+
+    #     Returns
+    #     -------
+    #     LLMCallOutput : 
+    #         Wrapper for the response message, usage, logprobs, and parsed output.
+    #     '''
+    #     try:
+    #         # finalise the list of api messages for the interaction with an LLM
+    #         messages = [*self.messages, self.build_api_message("user", prompt)]
+
+    #         # assemble the configuration parameter settings
+    #         # for the LLM interaction
+    #         # ORIGINAL:
+    #         # kwargs = {
+    #         #     "model": self.model_name,
+    #         #     "messages": messages,
+    #         #     "temperature": self.temperature,
+    #         #     "top_p": self.top_p,
+    #         #     "reasoning_effort": self.reasoning_effort,
+    #         #     "max_completion_tokens": self.max_completion_tokens,
+    #         #     "response_format": self.response_format,
+    #         #     "logprobs": self.logprobs,
+    #         #     "top_logprobs": self.top_logprobs
+    #         # }
+    #         # END ORIGINAL
+            
+    #         kwargs = {
+    #             "model": self.model_name,
+    #             "messages": messages,
+    #             "temperature": self.temperature,
+    #             "top_p": self.top_p,
+    #             "logprobs": self.logprobs,
+    #             "top_logprobs": self.top_logprobs,
+    #         }
+
+    #         if self.enable_thinking is not None:
+    #             kwargs["extra_body"] = {
+    #                 "chat_template_kwargs": {
+    #                     "enable_thinking": self.enable_thinking
+    #                 }
+    #             }
+
+    #         # consult the LLM Oracle regarding the current mapping 
+    #         response = self.client.chat.completions.parse(**kwargs)
+
+    #         #
+    #         # extract and prepare the elements of the LLM's response
+    #         # that are of interest
+    #         #
+
+    #         # get the raw response message from the LLM Oracle; this raw 
+    #         # response may not satisfy our requirement for a one-word, 
+    #         # binary, true/false prediction regarding the candidate mapping;
+    #         # we focus more intently on the parsed_output(see below)
+    #         output_message = response.choices[0].message.content
+
+    #         usage = TokensUsage(
+    #             input_tokens=response.usage.prompt_tokens,
+    #             output_tokens=response.usage.completion_tokens,
+    #         )
+    #         try:
+    #             logprobs = response.choices[0].logprobs.model_dump()["content"]
+    #         except AttributeError:
+    #             logprobs = []
+            
+    #         parsed_output = response.choices[0].message.parsed
+
+    #         return LLMCallOutput(message=output_message, 
+    #                              usage=usage, 
+    #                              logprobs=logprobs, 
+    #                              parsed=parsed_output)
+
+    #     except Exception as e:
+    #         raise e
+
+

@@ -6,13 +6,12 @@ from __future__ import annotations
 
 import functools
 from typing import Any, Callable
-from oracle_consultation_managers import OracleConsultationManager_OpenAI
+from logmap_llm.oracle.manager import OracleConsultationManager_OpenAI
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from constants import BinaryOutputFormat, BinaryOutputFormatWithReasoning
+from logmap_llm.constants import BinaryOutputFormat, BinaryOutputFormatWithReasoning
 from tqdm import tqdm
 import time
 import numpy as np
-import developer_prompts as dp
 from openai import BadRequestError
 
 
@@ -128,9 +127,9 @@ def consult_oracle_for_mapping(entity_pair, prompt, llm_oracle):
         print(entity_pair)
         # try to extract the error msg from within the OpenAI BadRequestError
         parts1 = bre.message.split("'message':")
-        parts2 = parts1[1].split(",")
-        error_msg = parts2[0].lstrip()
-        if len(error_msg) > 0:
+        if len(parts1) > 1:
+            parts2 = parts1[1].split(",")
+            error_msg = parts2[0].lstrip()
             print(f'BadRequestError: {error_msg}')
         else:
             print(f'BadRequestError: {bre}')
@@ -148,11 +147,17 @@ def consult_oracle_for_mapping(entity_pair, prompt, llm_oracle):
         return mapping_prediction, token_usage
 
 
-def consult_oracle_for_mappings_to_ask(m_ask_oracle_user_prompts, 
-                                       api_key,
-                                       model_name,
-                                       max_workers,
-                                       m_ask_df):
+def consult_oracle_for_mappings_to_ask(
+    m_ask_oracle_user_prompts,
+    api_key,
+    model_name,
+    max_workers,
+    m_ask_df,
+    base_url=None,
+    enable_thinking=None,
+    interaction_style=None,
+    developer_prompt_text=None,
+):                                     
     '''
     Consult an LLM Oracle for each candidate mapping in a set of
     candidate mappings.
@@ -189,7 +194,10 @@ def consult_oracle_for_mappings_to_ask(m_ask_oracle_user_prompts,
     # For now, there is only one choice!
     # TODO: externalise this choice in the config.toml file; but in the
     # expert config.toml file, not the basic config file
-    interaction_style_name = 'openai_chat_completions_parse_structured_output'
+    # interaction_style_name = 'openai_chat_completions_parse_structured_output'
+    if interaction_style is None:
+        interaction_style = 'openai_chat_completions_parse_structured_output'
+    interaction_style_name = interaction_style
 
     # TODO: consider externalising all of these LLM Oracle config parameters,
     # but in a 2nd config.toml file --- a config file for detailed control
@@ -213,13 +221,35 @@ def consult_oracle_for_mappings_to_ask(m_ask_oracle_user_prompts,
         "response_format": BinaryOutputFormat # BinaryOutputFormatWithReasoning
     }
 
+    if base_url:
+        kwargs["base_url"] = base_url
+
+    if enable_thinking is not None:
+        kwargs["enable_thinking"] = enable_thinking
+
     # instantiate a fresh Oracle consultation manager to conduct the
     # Oracle consultations for the set of candidate mappings in m_ask
     llm_oracle = OracleConsultationManager_OpenAI(api_key, model_name, 
                                                   interaction_style_name, **kwargs)
 
     # TODO: externalise the choice of developer message in the config.toml file
-    llm_oracle.add_developer_message(dp.DEV_PROMPT_CLASS_EQUIVALENCE)
+    # llm_oracle.add_developer_message(dp.DEV_PROMPT_CLASS_EQUIVALENCE)
+    if developer_prompt_text is not None:
+        llm_oracle.add_developer_message(developer_prompt_text)
+
+    oracle_params = {
+        "model_name": model_name,
+        "base_url": base_url,
+        "interaction_style": interaction_style_name,
+        "temperature": kwargs.get("temperature"),
+        "top_p": kwargs.get("top_p"),
+        "reasoning_effort": kwargs.get("reasoning_effort"),
+        "max_completion_tokens": kwargs.get("max_completion_tokens"),
+        "enable_thinking": kwargs.get("enable_thinking"),
+        "response_format": kwargs.get("response_format", "N/A"),
+        "developer_prompt_set": developer_prompt_text is not None,
+        "max_workers": max_workers,
+    }
 
     # container for LLM mapping predictions: 
     # [source, target, prediction, confidence]
@@ -293,6 +323,8 @@ def consult_oracle_for_mappings_to_ask(m_ask_oracle_user_prompts,
     ordered_token_usage_input = []
     ordered_token_usage_output = []
 
+    skipped_count = 0
+
     # iterate over the mappings_to_ask 
     for row in m_ask_df.iterrows():
         # get the URIs of the two entities involved in the current mapping
@@ -301,15 +333,31 @@ def consult_oracle_for_mappings_to_ask(m_ask_oracle_user_prompts,
         
         # get the correct LLM prediction for the current mapping_to_ask
         idx = entity_pair_to_idx[(src_entity_uri, tgt_entity_uri)]
-        mp = mapping_predictions[idx]   # [source, target, prediction, confidence]
+        if idx is not None:
+            mp = mapping_predictions[idx]
+            ordered_llm_mapping_predictions.append(mp[2])
+            ordered_llm_prediction_confidences.append(mp[3])
+            ordered_token_usage_input.append(tokens_usage[idx][0])
+            ordered_token_usage_output.append(tokens_usage[idx][1])
+        else:
+            skipped_count += 1
+            ordered_llm_mapping_predictions.append("skipped")
+            ordered_llm_prediction_confidences.append(str(np.nan))
+            ordered_token_usage_input.append(np.nan)
+            ordered_token_usage_output.append(np.nan)
+        
+        # mp = mapping_predictions[idx]   # [source, target, prediction, confidence]
         
         # store the binary prediction (True/False) and prediction confidence 
-        ordered_llm_mapping_predictions.append(mp[2])
-        ordered_llm_prediction_confidences.append(mp[3])
+        # ordered_llm_mapping_predictions.append(mp[2])
+        # ordered_llm_prediction_confidences.append(mp[3])
         
         # order the token usage correspondingly
-        ordered_token_usage_input.append(tokens_usage[idx][0])
-        ordered_token_usage_output.append(tokens_usage[idx][1])
+        # ordered_token_usage_input.append(tokens_usage[idx][0])
+        # ordered_token_usage_output.append(tokens_usage[idx][1])
+
+    if skipped_count > 0:
+        print(f"[WARNING] {skipped_count} mappings were skipped.")
 
     # initialise an extended dataframe with a copy of the original
     m_ask_df_ext = m_ask_df.copy()
@@ -324,5 +372,5 @@ def consult_oracle_for_mappings_to_ask(m_ask_oracle_user_prompts,
     m_ask_df_ext['Oracle_input_tokens'] = ordered_token_usage_input
     m_ask_df_ext['Oracle_output_tokens'] = ordered_token_usage_output
 
-    return m_ask_df_ext
+    return m_ask_df_ext, oracle_params
 

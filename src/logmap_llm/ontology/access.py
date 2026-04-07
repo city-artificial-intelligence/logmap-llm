@@ -1,3 +1,4 @@
+from __future__ import annotations
 
 import contextlib
 import logging
@@ -11,7 +12,7 @@ import owlready2
 # this commented-out import altogether.
 #import rdflib
 
-from owlready2 import default_world, get_ontology, sync_reasoner, sync_reasoner_pellet
+from owlready2 import sync_reasoner, sync_reasoner_pellet
 
 
 class Reasoner(Enum):
@@ -93,9 +94,14 @@ class AnnotationURIs:
 
 
 class OntologyAccess:
-    def __init__(self, urionto: str, annotate_on_init: bool = True) -> None:
+    
+    def __init__(self, urionto: str, annotate_on_init: bool = True, cache=None) -> None:
         logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.WARNING)
         self.urionto = str(urionto)
+        self._cache = cache
+
+        self.world = owlready2.World()
+
         if annotate_on_init:
             self.load_ontology()
             self.indexAnnotations()
@@ -104,7 +110,7 @@ class OntologyAccess:
         return self.urionto
 
     def load_ontology(self, reasoner: Reasoner = Reasoner.NONE, memory_java: str = "10240") -> None:
-        self.onto: owlready2.Ontology = get_ontology(self.urionto).load()
+        self.onto = self.world.get_ontology(self.urionto).load()
         owlready2.JAVA_MEMORY = memory_java
         # DH: If we set log level here, then the 2nd call we make
         # to this function, to load the 2nd (target) ontology, writes
@@ -123,7 +129,7 @@ class OntologyAccess:
                     # Is this wrt data assertions? Check if necessary
                     # infer_property_values = True, infer_data_property_values = True
                     logging.info("Classifying ontology with Pellet...")
-                    sync_reasoner_pellet()  # it does add inferences to ontology
+                    sync_reasoner_pellet(x=self.world)  # it does add inferences to ontology
                     unsat = len(list(self.onto.inconsistent_classes()))
                     logging.info("Ontology successfully classified.")
                     if unsat > 0:
@@ -136,7 +142,7 @@ class OntologyAccess:
             try:
                 with self.onto:  # it does add inferences to ontology
                     logging.info("Classifying ontology with HermiT...")
-                    sync_reasoner()  # HermiT doe snot work very well....
+                    sync_reasoner(x=self.world)  # HermiT doe snot work very well....
                     unsat = len(list(self.onto.inconsistent_classes()))
                     logging.info("Ontology successfully classified.")
                     if unsat > 0:
@@ -144,21 +150,25 @@ class OntologyAccess:
             except owlready2.OwlReadyOntologyParsingError:
                 logging.info("Classifying with HermiT failed.")
 
-        self.graph = default_world.as_rdflib_graph()
+        self.graph = self.world.as_rdflib_graph()
         # DH: This used to be a logging.info() statement. But for
         # LogMap-LLM we have promoted it to a print() statement, so
         # the user can always see how big the ontology is that is
         # being processed and prepared from prompt building.
+
+        # O(1) URI lookup indices
+        self._uri_to_class = {cls.iri: cls for cls in self.onto.classes()}
+        self._uri_to_entity = dict(self._uri_to_class)
+        for prop in self.onto.properties():
+            self._uri_to_entity[prop.iri] = prop
+
         print(f"There are {len(self.graph)} triples in the ontology")
 
     def getOntology(self) -> owlready2.Ontology:
         return self.onto
 
-    def getClassByURI(self, uri: str) -> owlready2.EntityClass:
-        for cls in list(self.getOntology().classes()):
-            if cls.iri == uri:
-                return cls
-        return None
+    def getClassByURI(self, uri: str):
+        return self._uri_to_class.get(uri)
 
     def getClassByName(self, name: str) -> owlready2.EntityClass:
         for cls in list(self.getOntology().classes()):
@@ -166,14 +176,8 @@ class OntologyAccess:
                 return cls
         return None
 
-    def getEntityByURI(self, uri: str) -> owlready2.EntityClass:
-        for cls in list(self.getOntology().classes()):
-            if cls.iri == uri:
-                return cls
-        for prop in list(self.getOntology().properties()):
-            if prop.iri == uri:
-                return prop
-        return None
+    def getEntityByURI(self, uri: str):
+        return self._uri_to_entity.get(uri)
 
     def getEntityByName(self, name: str) -> owlready2.EntityClass:
         for cls in list(self.getOntology().classes()):
@@ -203,41 +207,23 @@ class OntologyAccess:
         ancestors_str.remove(cls.iri)
         return ancestors_str
 
-    def getAncestorsURIs(self, cls: owlready2.EntityClass) -> set[str]:
-        ancestors_str = set()
-        for anc_cls in cls.ancestors():
-            ancestors_str.add(anc_cls.iri)
-        return ancestors_str
+    def getAncestorsURIs(self, cls) -> set[str]:
+        return {anc_cls.iri for anc_cls in cls.ancestors()}
 
-    def getAncestorsNames(self, cls: owlready2.EntityClass) -> set[str]:
-        ancestors_str = set()
-        for anc_cls in cls.ancestors():
-            ancestors_str.add(anc_cls.name)
-        return ancestors_str
+    def getAncestorsNames(self, cls) -> set[str]:
+        return {anc_cls.name for anc_cls in cls.ancestors()}
 
-    def getAncestors(self, cls: owlready2.EntityClass, include_self: bool = True) -> set[owlready2.ThingClass]:
-        ancestors_str = set()
-        for anc_cls in cls.ancestors(include_self=include_self):
-            ancestors_str.add(anc_cls)
-        return ancestors_str
+    def getAncestors(self, cls, include_self: bool = True) -> set:
+        return {anc_cls for anc_cls in cls.ancestors(include_self=include_self)}
 
-    def getDescendantURIs(self, cls: owlready2.EntityClass) -> set[str]:
-        descendants_str = set()
-        for desc_cls in cls.descendants():
-            descendants_str.add(desc_cls.iri)
-        return descendants_str
+    def getDescendantURIs(self, cls) -> set[str]:
+        return {desc_cls.iri for desc_cls in cls.descendants()}
 
-    def getDescendantNames(self, cls: owlready2.EntityClass) -> set[str]:
-        descendants_str = set()
-        for desc_cls in cls.descendants():
-            descendants_str.add(desc_cls.name)
-        return descendants_str
+    def getDescendantNames(self, cls) -> set[str]:
+        return {desc_cls.name for desc_cls in cls.descendants()}
 
-    def getDescendants(self, cls: owlready2.EntityClass, include_self: bool = True) -> set[owlready2.ThingClass]:
-        descendants_str = set()
-        for desc_cls in cls.descendants(include_self=include_self):
-            descendants_str.add(desc_cls)
-        return descendants_str
+    def getDescendants(self, cls, include_self: bool = True) -> set:
+        return {desc_cls for desc_cls in cls.descendants(include_self=include_self)}    
 
     def getDescendantNamesForClassName(self, cls_name: str) -> set[str]:
         cls = self.getClassByName(cls_name)
@@ -298,8 +284,7 @@ class OntologyAccess:
         return self.graph
 
     def queryGraph(self, query: str) -> list:
-        results = self.graph.query(query)
-        return list(results)
+        return list(self.graph.query(query))
 
     def getQueryForAnnotations(self, ann_prop_uri: str) -> str:
         return f"""SELECT DISTINCT ?s ?o WHERE {{
@@ -318,11 +303,18 @@ class OntologyAccess:
         self.entityToSynonyms = {}
         self.allEntityAnnotations = {}
         self.preferredLabels = {}
-        self.populateAnnotationDicts(annotation_uris.get_annotation_uris_for_synonyms(), self.entityToSynonyms)
         self.populateAnnotationDicts(
-            annotation_uris.get_annotation_uris_for_lexical_annotations(), self.allEntityAnnotations
+            annotation_uris.get_annotation_uris_for_synonyms(),
+            self.entityToSynonyms,
         )
-        self.populateAnnotationDicts(annotation_uris.get_annotation_uris_for_preferred_labels(), self.preferredLabels)
+        self.populateAnnotationDicts(
+            annotation_uris.get_annotation_uris_for_lexical_annotations(),
+            self.allEntityAnnotations,
+        )
+        self.populateAnnotationDicts(
+            annotation_uris.get_annotation_uris_for_preferred_labels(),
+            self.preferredLabels,
+        )
 
     def populateAnnotationDicts(self, annotation_uris: set, dictionary: dict) -> None:
         """Populate the given dictionary with annotations from the provided URIs.
@@ -356,15 +348,16 @@ class OntologyAccess:
 
     def getSynonymsNames(self, entity: owlready2.Thing) -> set[str]:
         if entity.iri not in self.entityToSynonyms:
-            return {}
+            return set()
         return self.entityToSynonyms[entity.iri]
 
     def getAnnotationNames(self, entity: owlready2.Thing) -> set[str]:
         if entity.iri not in self.allEntityAnnotations:
-            return {}
+            return set()
         return self.allEntityAnnotations[entity.iri]
 
     def getPrefferedLabels(self, entity: owlready2.Thing) -> set[str]:
         if entity.iri not in self.preferredLabels:
-            return {}
+            return set()
         return self.preferredLabels[entity.iri]
+
