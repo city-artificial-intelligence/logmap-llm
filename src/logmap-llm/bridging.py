@@ -3,13 +3,25 @@ This module contains functionality that supports bridging
 between the worlds of Python and Java.
 '''
 
-#%% Python imports
+# Python imports
 
 import pandas as pd
-from constants import EntityType, EntityRelation
 
+from logmap_llm.constants import (
+    EntityType,
+    EntityRelation,
+    COL_SOURCE_ENTITY_URI,
+    COL_TARGET_ENTITY_URI,
+    COL_RELATION,
+    COL_CONFIDENCE,
+    COL_ENTITY_TYPE,
+    M_ASK_COLUMNS,
+    PAIRS_SEPARATOR,
+)
 
-#%% Java imports
+from pathlib import Path
+
+# Java imports
 
 # These import statements presume that JPype has been imported
 # and used to start a JVM (Java Virtual Machine) that has
@@ -21,16 +33,16 @@ from uk.ac.ox.krr.logmap2.mappings.objects import MappingObjectStr
 from java.util import HashSet
 
 
-#%% Column names
+# Column names (NOTE: are now imported from constants.py)
 
-column_source_entity_uri = 'source_entity_uri'
-column_target_entity_uri = 'target_entity_uri'
-column_relation = 'relation'
-column_confidence = 'confidence'
-column_entityType = 'entityType'
+# column_source_entity_uri = 'source_entity_uri'
+# column_target_entity_uri = 'target_entity_uri'
+# column_relation = 'relation'
+# column_confidence = 'confidence'
+# column_entityType = 'entityType'
 
 
-#%% Entity type representations
+# Entity type representations
 
 # LogMap recognises 5 entity types in its <MappingObjectStr> objects,
 # each one represented by a particular integer. The LogMap m_ask 
@@ -50,7 +62,7 @@ entityType_int_2_str = {0: EntityType.CLASS.value,
 entityType_str_2_int = {et_str: et_int for et_int, et_str in entityType_int_2_str.items()}
 
 
-#%% Relation representations
+# Relation representations
 
 # LogMap recognises 3 relations in its <MappingObjectStr> objects,
 # each one represented by a particular integer. The LogMap m_ask 
@@ -72,9 +84,29 @@ relation_int_2_str = { 0: EntityRelation.SUBCLASSOF.value,
 relation_str_2_int = {r_str: r_int for r_int, r_str in relation_int_2_str.items()}
 
 
-#%%
+# M_ask related fns
 
-def java_mappings_2_python(m_ask_java):
+def get_m_ask_column_names() -> list[str]:
+    """
+    Returns M_ASK_COLUMNS as a mutable list
+    """
+    return list(M_ASK_COLUMNS)
+
+
+def load_m_ask_from_file(filepath: Path) -> pd.DataFrame:
+    """
+    Load a (headerless, pipe-delimited) LogMap m_ask file as a pd.DataFrame
+    Then sets the column names to those defined by constants.py
+    """
+    m_ask_df = pd.read_csv(filepath, sep=PAIRS_SEPARATOR, header=None)
+    m_ask_df.columns = get_m_ask_column_names()
+    return m_ask_df
+
+# END: M_ask related fns
+
+
+
+def java_mappings_2_python(m_ask_java) -> pd.DataFrame:
     '''
     Convert a set of ontology alignment mappings from LogMap's Java 
     representation to LogMap-LLM's Python represention.
@@ -98,7 +130,7 @@ def java_mappings_2_python(m_ask_java):
     tgt_entity_uris = []
     relations = []
     confidences = []
-    entityTypes = []
+    entity_types = []
 
     # iterate over the mappings in their Java representation
     for mapping_java in m_ask_java:
@@ -111,10 +143,9 @@ def java_mappings_2_python(m_ask_java):
         # relation to a string representation
         relation_int = mapping_java.getMappingDirection()
         if relation_int in relation_int_2_str:
-            relation = relation_int_2_str[relation_int]
+            relations.append(relation_int_2_str[relation_int])
         else:
             raise ValueError(f'Relation {relation_int} not recognised')
-        relations.append(relation)
 
         # get LogMap's confidence in the mapping
         confidences.append(mapping_java.getConfidence())
@@ -123,37 +154,20 @@ def java_mappings_2_python(m_ask_java):
         # to a string representation
         entityType_int = mapping_java.getTypeOfMapping()
         if entityType_int in entityType_int_2_str:
-            entityType = entityType_int_2_str[entityType_int]
+            entity_types.append( entityType_int_2_str[entityType_int])
         else:
             raise ValueError(f'Entity type {entityType_int} not recognised')
-        entityTypes.append(entityType)
     
     # assemble the columns of mapping elements into a DataFrame
-    m_ask_df = pd.DataFrame(data={column_source_entity_uri: src_entity_uris,
-                                  column_target_entity_uri: tgt_entity_uris,
-                                  column_relation: relations,
-                                  column_confidence: confidences,
-                                  column_entityType: entityTypes})
-    
-    return m_ask_df
+    return pd.DataFrame(data={
+        COL_SOURCE_ENTITY_URI: src_entity_uris,
+        COL_TARGET_ENTITY_URI: tgt_entity_uris,
+        COL_RELATION: relations,
+        COL_CONFIDENCE: confidences,
+        COL_ENTITY_TYPE: entity_types,
+    })
 
 
-#%%
-
-def get_m_ask_column_names():
-
-  column_names = [
-      column_source_entity_uri,
-      column_target_entity_uri,
-      column_relation,
-      column_confidence,
-      column_entityType
-  ]
-
-  return column_names
-
-
-#%%
 
 def python_oracle_mapping_predictions_2_java(m_ask_df_ext):
     '''

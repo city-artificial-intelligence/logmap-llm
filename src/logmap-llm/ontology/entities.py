@@ -1,12 +1,47 @@
+'''
+NOTE: I suppose this is the OBDA layer, so maybe object.py is more appropraite?
+'''
+
 from __future__ import annotations
 
 import owlready2
 
 #from constants import LOGGER
-from onto_access import OntologyAccess
+from logmap_llm.ontology.access import OntologyAccess
 
 
-class OntologyEntryAttr:
+from abc import ABC, abstractmethod
+
+
+class ClassNotFoundError(Exception):
+    pass
+
+
+class OntologyEntity(ABC):
+
+    @abstractmethod
+    def get_preferred_names(self) -> set[str]:
+        ...
+
+    @abstractmethod
+    def get_all_entity_names(self) -> set[str]:
+        ...
+
+    @abstractmethod
+    def get_synonyms(self) -> set[str]:
+        ...
+
+    def __eq__(self, other) -> bool:
+        if not isinstance(other, OntologyEntity):
+            return NotImplemented
+        return getattr(self, 'thing_class', None) == getattr(other, 'thing_class', None)
+
+    def __hash__(self) -> int:
+        return hash(getattr(self, 'thing_class', id(self)))
+
+
+
+class ClassEntity(OntologyEntity):
     def __init__(
         self, class_uri: str | None, onto: OntologyAccess, onto_entry: owlready2.ThingClass | None = None
     ) -> None:
@@ -15,7 +50,9 @@ class OntologyEntryAttr:
             self.thing_class = onto.getClassByURI(class_uri)
         else:
             self.thing_class = onto_entry
-        assert self.thing_class is not None, f"Class {class_uri} not found in ontology {onto.get_ontology_iri()}"
+        
+        if self.thing_class is None:
+            raise ClassNotFoundError(f"Class {class_uri} not found in ontology.")
 
         self.annotation: dict[str : set | owlready2.ThingClass] = {"class": self.thing_class}
         self.onto: OntologyAccess = onto
@@ -51,25 +88,41 @@ class OntologyEntryAttr:
     def get_all_entity_names(self) -> set[str]:
         return self.annotation["all_names"]
 
+    def get_preferred_names(self) -> set[str]:
+        return self.annotation["preffered_names"]
+
+    # Legacy API (used throughout existing code)
     def get_preffered_names(self) -> set[str]:
         return self.annotation["preffered_names"]
 
     def get_synonyms(self) -> set[str]:
         return self.annotation["synonyms"]
 
-    def __wrap_owlready2_objects(self, owlready2_class: owlready2.ThingClass) -> OntologyEntryAttr:
-        return OntologyEntryAttr(class_uri=None, onto_entry=owlready2_class, onto=self.onto)
+    # def __wrap_owlready2_objects(self, owlready2_class: owlready2.ThingClass) -> OntologyEntryAttr:
+    #     return OntologyEntryAttr(class_uri=None, onto_entry=owlready2_class, onto=self.onto)
+    
+    def __wrap_owlready2_objects(self, owlready2_class: owlready2.ThingClass) -> ClassEntity:
+        return ClassEntity(class_uri=None, onto_entry=owlready2_class, onto=self.onto)
 
-    def __owlready_set2_objects_set(self, owlready2_set: set[owlready2.ThingClass]) -> set[OntologyEntryAttr]:
-        return {self.__wrap_owlready2_objects(owlready2_class) for owlready2_class in owlready2_set}
+    # def __owlready_set2_objects_set(self, owlready2_set: set[owlready2.ThingClass]) -> set[OntologyEntryAttr]:
+    #     return {self.__wrap_owlready2_objects(owlready2_class) for owlready2_class in owlready2_set}
 
-    def get_children(self) -> set[OntologyEntryAttr]:
+    def __owlready_set2_objects_set(self, owlready2_set: set[owlready2.ThingClass]) -> set[ClassEntity]:
+        return {self.__wrap_owlready2_objects(c) for c in owlready2_set}
+
+    # def get_children(self) -> set[OntologyEntryAttr]:
+    #     return self.__owlready_set2_objects_set(self.annotation["children"])
+
+    def get_children(self) -> set[ClassEntity]:
         return self.__owlready_set2_objects_set(self.annotation["children"])
 
-    def get_parents(self) -> set[OntologyEntryAttr]:
+    # def get_parents(self) -> set[OntologyEntryAttr]:
+    #     return self.__owlready_set2_objects_set(self.annotation["parents"])
+
+    def get_parents(self) -> set[ClassEntity]:
         return self.__owlready_set2_objects_set(self.annotation["parents"])
 
-    def __get_relatives_by_levels(self, max_level: int, relatives_func: callable) -> dict[int, set[OntologyEntryAttr]]:
+    def __get_relatives_by_levels(self, max_level: int, relatives_func: callable) -> dict[int, set[ClassEntity]]:
         """Get the relatives of the entry by all levels up to max_level."""
         current_level = 0
         current_level_entries: set[owlready2.ThingClass] = {self.thing_class}
@@ -94,25 +147,43 @@ class OntologyEntryAttr:
 
         return relatives_by_levels
 
-    def get_parents_by_levels(self, max_level: int = 3) -> dict[int, set[OntologyEntryAttr]]:
-        """Obtain the parents of the entry by all levels up to max_level."""
+    # def get_parents_by_levels(self, max_level: int = 3) -> dict[int, set[OntologyEntryAttr]]:
+    #     """Obtain the parents of the entry by all levels up to max_level."""
+    #     return self.__get_relatives_by_levels(max_level, self.onto.getAncestors)
+
+    # def get_children_by_levels(self, max_level: int = 3) -> dict[int, set[OntologyEntryAttr]]:
+    #     """Obtain the children of the entry by all levels up to max_level."""
+    #     return self.__get_relatives_by_levels(max_level, self.onto.getDescendants)
+
+    def get_parents_by_levels(self, max_level: int = 3) -> dict[int, set[ClassEntity]]:
         return self.__get_relatives_by_levels(max_level, self.onto.getAncestors)
 
-    def get_children_by_levels(self, max_level: int = 3) -> dict[int, set[OntologyEntryAttr]]:
-        """Obtain the children of the entry by all levels up to max_level."""
+    def get_children_by_levels(self, max_level: int = 3) -> dict[int, set[ClassEntity]]:
         return self.__get_relatives_by_levels(max_level, self.onto.getDescendants)
 
-    def get_direct_parents(self) -> set[OntologyEntryAttr]:
-        """Return set of direct parents of the entry."""
+    # def get_direct_parents(self) -> set[OntologyEntryAttr]:
+    #     """Return set of direct parents of the entry."""
+    #     parents_by_levels = self.__get_relatives_by_levels(1, self.onto.getAncestors)
+    #     return parents_by_levels[1] if len(parents_by_levels) > 1 else set()
+
+    # def get_direct_parent(self) -> OntologyEntryAttr | None:
+    #     parent = next(iter(self.annotation["parents"])) if self.annotation["parents"] else None
+    #     return self.__wrap_owlready2_objects(parent) if parent else None
+
+    # def get_direct_children(self) -> set[OntologyEntryAttr]:
+    #     """Return set of direct children of the entry."""
+    #     children_by_levels = self.__get_relatives_by_levels(1, self.onto.getDescendants)
+    #     return children_by_levels[1] if len(children_by_levels) > 1 else set()
+
+    def get_direct_parents(self) -> set[ClassEntity]:
         parents_by_levels = self.__get_relatives_by_levels(1, self.onto.getAncestors)
         return parents_by_levels[1] if len(parents_by_levels) > 1 else set()
 
-    def get_direct_parent(self) -> OntologyEntryAttr | None:
-        parent = next(iter(self.annotation["parents"])) if self.annotation["parents"] else None
+    def get_direct_parent(self) -> ClassEntity | None:
+        parent = next(iter(self.annotation["parents"]), None)
         return self.__wrap_owlready2_objects(parent) if parent else None
 
-    def get_direct_children(self) -> set[OntologyEntryAttr]:
-        """Return set of direct children of the entry."""
+    def get_direct_children(self) -> set[ClassEntity]:
         children_by_levels = self.__get_relatives_by_levels(1, self.onto.getDescendants)
         return children_by_levels[1] if len(children_by_levels) > 1 else set()
 
@@ -166,3 +237,37 @@ class OntologyEntryAttr:
     def __hash__(self) -> int:
         """Return the hash value of the object."""
         return hash(self.thing_class)
+    
+# ensure backwards compatability
+OntologyEntryAttr = ClassEntity
+
+# STUBS
+
+class PropertyEntity(OntologyEntity):
+
+    def get_preferred_names(self) -> set[str]:
+        raise NotImplementedError("STUB")
+
+    def get_all_entity_names(self) -> set[str]:
+        raise NotImplementedError("STUB")
+
+    def get_synonyms(self) -> set[str]:
+        raise NotImplementedError("STUB")
+
+
+class InstanceEntity(OntologyEntity):
+
+    def get_preferred_names(self) -> set[str]:
+        raise NotImplementedError("STUB")
+
+    def get_all_entity_names(self) -> set[str]:
+        raise NotImplementedError("STUB")
+
+    def get_synonyms(self) -> set[str]:
+        raise NotImplementedError("STUB")
+
+
+# STUBS (BACKWRDS COMPATIBILITY)
+PropertyEntryAttr = PropertyEntity
+InstanceEntryAttr = InstanceEntity
+
