@@ -82,17 +82,35 @@
 
 #### architecture/port-from-jd-extended
 
-BRIEF-DESC-GOES-HERE
+This revision ports/merges architectural changes from the `jd-extended` branch into the original codebase. Numerous smaller changes are also included & discussed below.
 
-1. **package-scaffolding:**
-2. **pipeline-decomposition:**
-3. **abstractions:**
+**Major Changes**
+
+* Restructuring the [original code](https://github.com/city-artificial-intelligence/logmap-llm) to accommodate for package scaffolding (e.g., rather than `from constants import *`, we now write `from logmap_llm.constants import *`, etc). We also include a `pyproject.toml` file in the root dir and separate pipeline components in `src/logmap_llm`.
+
+* The pipeline is now composed of [individual 'step' functions](https://github.com/jonathondilworth/logmap-llm/blob/architecture/port-from-jd-extended/src/logmap_llm/pipeline/steps.py); each 'step' produces an output that the following step consumes, while many parameters are accessible via a shared `ctx` object. The commit history surrounding these changes is provided [under this branch](https://github.com/jonathondilworth/logmap-llm/tree/jd-extended).
+
+**Smaller Changes**
+
+* A new LogMap build that can detect undeclared ABox predicates as properties for the OAEI KG track is included.
+* Many stubs for future changes that are in the process of being tested and merged in are included.
+* The `OntologyAccess` now its own Owlready2 world, rather than the default world (to avoid readwrite contention when processes run in parallel). This is further helped in future patches when an owlready2 quadstore cache is included.
+* M_ask column names are provided as an immutable tuple and are copied as a mutable list when needed.
+* Project file paths are largely handled by the `logmap_llm.pipeline.paths` object (which reads from config) rather than using many hardcoded paths. This becomes increasingly important when future changes are merged in, in which we require a means of managing the complexity of managing many ablation experiments and ensuring parallel experiments are not overwriting the results from other experiments, etc.
+* `logmap_llm.log_utils` provides a utility to write a log file and use colour-coded warnings that print to the terminal.
+* `onto_object.py` is now found under `logmap_llm.ontology.entities` and provides an ABS for an entity, extending this class for classes, properties and instances.
+* some of the TODOs in `oracle_consultation.py` and `oracle_consultation_managers.py` have been addressed, and are now found under `logmap_llm.oracle.consultation` and `logmap_llm.oracle.manager`.
+* Additional modules that contain utilities, boilerplate and stubs have also been included.
+
+**This is probably the largest set of changes before merging in the remaining features.**
+
+_An outline of the feature and planned feature branches are available to review under [logmap_llm_rework.md](https://github.com/jonathondilworth/logmap-llm/blob/architecture/port-from-jd-extended/logmap_llm_rework.md)._
 
 #### refactor/base-patches
 
 BRIEF-DESC-GOES-HERE
 
-1.  **base-patches:**
+1. **base-patches:**
 2. **kg-realignment-bypass:**
 
 #### core/*
