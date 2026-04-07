@@ -42,18 +42,6 @@ from logmap_llm.constants import (
 )
 
 
-import oracle_prompt_building as opb
-
-from dataclasses import dataclass
-from pipeline_config import (
-    LogMapLLMConfig
-)
-from logmap_interface import (
-    LogMapInterface,
-)
-
-
-
 # NOTE: We DO NOT import oracle_prompt_building or onto_access here.
 # Those modules transitively import owlready2, which has seemed to cause
 # issues with JPype in the same process; prompt building runs in a subprocess.
@@ -140,7 +128,7 @@ def prompt_build(ctx, initial_alignment: AlignmentResult) -> PromptBuildResult:
                 warning("No config path available for subprocess dispatch -- skipping")
             
             cmd = [
-                sys.executable, "-m", "logmap_llm.pipeline.subp_prompt_builder.py",
+                sys.executable, "-m", "logmap_llm.pipeline.subp_prompt_builder",
                 "--config", config_path,
             ]
             

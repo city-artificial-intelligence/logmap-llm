@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from onto_object import OntologyEntryAttr
+from logmap_llm.ontology.entities import OntologyEntryAttr
 
 
 def get_name_string(name_set: set | list | OntologyEntryAttr) -> str:

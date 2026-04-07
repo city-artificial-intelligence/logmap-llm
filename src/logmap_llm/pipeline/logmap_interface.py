@@ -11,7 +11,7 @@ import jpype
 import jpype.imports
 from jpype.types import * # type: ignore
 from pathlib import Path
-from config_schema import LogMapLLMConfig
+from logmap_llm.config.schema import LogMapLLMConfig
 
 
 def start_jvm(logmap_dir: str | Path) -> None:

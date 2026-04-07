@@ -4,7 +4,7 @@ This module contains OracleConsultationManagers.
 
 from openai import OpenAI
 from pydantic import BaseModel
-from constants import BinaryOutputFormat, LLMCallOutput, TokensUsage
+from logmap_llm.constants import BinaryOutputFormat, LLMCallOutput, TokensUsage
 import json
 
 class OracleConsultationManager_OpenAI:

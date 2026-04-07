@@ -7,7 +7,7 @@ TODO: this needs to be well-documented.
 '''
 
 from pathlib import Path
-from config_schema import LogMapLLMConfig
+from logmap_llm.config.schema import LogMapLLMConfig
 
 
 class PipelinePaths:
