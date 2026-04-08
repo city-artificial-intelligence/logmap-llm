@@ -19,6 +19,15 @@ class BinaryOutputFormatWithReasoning(BaseModel):
     answer: bool
 
 
+class YesNoOutputFormat(BaseModel):
+    answer: str
+
+
+class YesNoOutputFormatWithReasoning(BaseModel):
+    reasoning: str
+    answer: str
+
+
 class TokensUsage(BaseModel):
     input_tokens: int | None
     output_tokens: int | None
@@ -32,6 +41,36 @@ class LLMCallOutput(BaseModel):
 
 
 PAIRS_SEPARATOR = "|"
+
+###
+# positive & negative tokens for answer format
+# (used by logprobs extraction, text-fallback parsing, and CSV normalisation)
+###
+
+POSITIVE_TOKENS = frozenset({"true", "yes"})
+NEGATIVE_TOKENS = frozenset({"false", "no"})
+
+###
+# Answer format: controls the response instruction wording in prompts
+# AND the structured output schema sent to the LLM.
+####
+
+ANSWER_FORMATS = frozenset({"true_false", "yes_no"})
+
+
+DEFAULT_ANSWER_FORMAT = "true_false" # TODO: modify to yes_no? Depends on consensus
+
+
+RESPONSE_INSTRUCTION = {
+    "true_false": 'Respond with "True" or "False".',
+    "yes_no":     'Respond with "Yes" or "No".',
+}
+
+
+RESPONSE_FORMAT_FOR_ANSWER = {
+    "true_false": BinaryOutputFormat,
+    "yes_no":     YesNoOutputFormat,
+}
 
 
 class EntityType(Enum):
