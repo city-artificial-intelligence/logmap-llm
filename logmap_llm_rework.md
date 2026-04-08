@@ -12,27 +12,27 @@
        │                  │                 │               │      │              |
        │                  │                 ├───────────────FORK─>>├────BRANCH───>├─BRANCH───> • (branch) architecture/port-from-jd-extended
        │                  │                 │                      │              │            │ 
-       │                  │                 │               |      │              │            • (commit) package-scaffolding
+       │                  │                 │               |      │              │            • (commit) package-scaffolding [COMPLETE]
        │                  │                 │                      │              │            │
-       │                  │                 │               |      │              │            • (commit) pipeline-decomposition
+       │                  │                 │               |      │              │            • (commit) pipeline-decomposition [COMPLETE]
        │                  │                 │                      │ [OPTIONAL]   │            │
-       │                  │                 │               | fc1  │<─MERGE─ ─ ─ ─│<─MERGE──── • (commit) abstractions
+       │                  │                 │               | fc1  │<─MERGE─ ─ ─ ─│<─MERGE──── • (commit) abstractions [COMPLETE]
        │                  │                 │                      │              │
        │                  │                 │               |      │              │
        │                  │                 │                      │              ├─BRANCH───> • (branch) refactor/* (depends on previous branch)
        │                  │                 │               |      │              │            │
-       │                  │                 │               |      │              │<─ - - - -  • (commit) base-patches
+       │                  │                 │               |      │              │<─ - - - -  • (commit) base-patches [DEFERRED]
        │                  │                 │               |      │ [OPTIONAL]   │            │
-       │                  │                 │                 fc2  │<─MERGE─ ─ ─ ─│<─MERGE──── • (commit) kg-refinement-bypass
+       │                  │                 │                 fc2  │<─MERGE─ ─ ─ ─│<─MERGE──── • (commit) kg-refinement-bypass [DEFERRED]
        │                  │                 │               |      │              │
        │                  │                 │                      │              │
        │                  │                 │               |      ├              ├─BRANCH───> • (branch) core/* (depends on architecture/port-from-jd-extended)
        │                  │                 │                      │              │            │
-       │                  │                 │               |      │              │<─ - - - -  • (commit) owlready2-cache
+       │                  │                 │               |      │              │<─ - - - -  • (commit) owlready2-cache [COMPLETE]
        │                  │                 │                      │              │            │
-       │                  │                 │               |      │              │<─ - - - -  • (commit) consultation-layer-mods
+       │                  │                 │               |      │              │<─ - - - -  • (commit) consultation-layer-mods [COMPLETE]
        │                  │                 │                      │ [OPTIONAL]   │            │
-       │                  │                 │               | fc3  │<─MERGE─ ─ ─ ─│<─MERGE──── • (commit) answer-format
+       │                  │                 │               | fc3  │<─MERGE─ ─ ─ ─│<─MERGE──── • (commit) answer-format [COMPLETE]
        │                  │                 │                      │              │
        │                  │                 │               |      │              │
        │                  │                 │                      ├              ├─BRANCH───> • (branch) core-2/* (depends on core/*)
@@ -115,11 +115,26 @@ BRIEF-DESC-GOES-HERE
 
 #### core/*
 
-BRIEF-DESC-GOES-HERE
+Consists of minor patches and core features, described below.
 
-1. **owlready2-cache:**
-2. **consultation-layer-mods:**
-3. **answer-format:**
+### Major Changes
+
+* Introduction of the `owlready2` cache that saves a copy of the parsed OWL/RDF to a canonical location `~/.cache/logmap-llm/owlready2` then concurrent processes lock, copy (to a experiment-specific location in `/tmp/` (since `owlready2` always opens a connection to its quadstore as readwrite), then release the cache. This provides a noticeable speed-up when running multiple experiments in parallel.
+* Introduction of the `Yes_No` answer format, allowing for ease of ablation between experiments via answer format.
+* Added property and instance-based indexing for `owlready2` and access to property and instance entities via `logmap_llm.ontology.entities` (formally the `onto_access.py` OBDA layer).
+* Added bidirectional consultation for inferring equivalence via left and right subsumption (see `logmap_llm.oracle.consultation` and `logmap_llm.oracle.manager`).
+* Updated developer/system prompt registry in `logmap_llm.oracle.prompts.developer`, now includes configurable property and instance-level dev/system prompts.
+
+### Small Changes
+
+* Documentation updated in `logmap_llm_rework.md`.
+* `preffered_names` typo has been corrected to `preferred_names`.
+* Included mechanism for lazy loading (indexing) of child classes in `logmap_llm.ontology.entities`.
+* Removed dead code.
+* Added basic-level functionality for fetching siblings (ordered alphanumerically) by: `{THIS_NODE -> DIRECT_PARENT -> ALL_CHILDREN} - {THIS_NODE}`.
+* Updated code for calculating logprobs (in `logmap_llm.oracle.consultation`).
+* Added methods for specifying the failure tolerance policy (in `logmap_llm.oracle.consultation`).
+* Minor refactoring to `logmap_llm.oracle.prompts.formatting`.
 
 #### core-2/*
 

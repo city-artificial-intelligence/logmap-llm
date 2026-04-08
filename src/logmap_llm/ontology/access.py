@@ -619,10 +619,110 @@ class OntologyAccess:
     ###
     # STUBS
     # NOTE: whether these need implementing depends on the final set of prompts we deicde to use
+    # NOTE: (8 April 26) included them for the time being, we can always remove them.
     ###
 
-    def getClassRestrictions(self, cls):
-        ...
+    def getClassRestrictions(self, cls) -> list[dict]:
+        """
+        Extract OWL restrictions declared on class via `is_a`.
 
-    def getClassRelationalSignature(self, cls):
-        ...
+        Returns a list of dicts with keys:
+        
+        * restriction_type: str/enum ('some', 'only', 'min', 'max', 'exactly')
+        * property_name: str (label),
+        * filler_name: str (label),
+        * cardinality: 
+        
+        Sorted by (property_name, filler_name) for reproducibility.
+        """
+        # TODO: consider migrating to constants.py (?)
+        RESTRICTION_TYPE_MAP = {
+            owlready2.SOME: "some",
+            owlready2.ONLY: "only",
+            owlready2.MIN: "min",
+            owlready2.MAX: "max",
+            owlready2.EXACTLY: "exactly",
+        }
+        restrictions: list[dict] = []
+        for parent in cls.is_a:
+            if not isinstance(parent, owlready2.Restriction):
+                continue
+            rtype = RESTRICTION_TYPE_MAP.get(parent.type)
+            if rtype is None:
+                continue
+
+            # property label
+            prop = parent.property
+            prop_labels = (
+                self.getPreferredLabels(prop)
+                if hasattr(prop, "iri")
+                else set()
+            )
+            prop_name = (
+                next(iter(prop_labels), None)
+                if prop_labels
+                else str(getattr(prop, "name", str(prop)))
+            )
+
+            # filler label
+            filler = parent.value
+            if isinstance(filler, owlready2.ThingClass):
+                filler_labels = self.getPreferredLabels(filler)
+                filler_name = (
+                    next(iter(filler_labels), None)
+                    if filler_labels
+                    else str(filler.name)
+                )
+            elif filler is not None:
+                filler_name = str(getattr(filler, "name", str(filler)))
+            else:
+                filler_name = None
+
+            restrictions.append(
+                {
+                    "restriction_type": rtype,
+                    "property_name": prop_name,
+                    "filler_name": filler_name,
+                    "cardinality": getattr(parent, "cardinality", None),
+                }
+            )
+
+        restrictions.sort(
+            key=lambda r: (r["property_name"] or "", r["filler_name"] or "")
+        )
+        return restrictions
+
+
+    def getClassRelationalSignature(self, cls) -> dict:
+        """
+        Returns properties where the classe (cls) appears in domain or range.
+        ie. 
+        ```
+        {
+            'as_domain': [label, ...], 
+            'as_range':  [label, ...],
+        }
+        ```
+        each list sorted alphabetically.
+        """
+        as_domain: list[str] = []
+        as_range: list[str] = []
+        
+        for prop in self.onto.object_properties():
+            labels = self.getPreferredLabels(prop)
+            label = next(iter(labels), None) if labels else str(prop.name)
+            if cls in prop.domain:
+                as_domain.append(label)
+            if cls in prop.range:
+                as_range.append(label)
+
+        for prop in self.onto.data_properties():
+            labels = self.getPreferredLabels(prop)
+            label = next(iter(labels), None) if labels else str(prop.name)
+            if cls in prop.domain:
+                as_domain.append(label)
+
+        return {
+            "as_domain": sorted(as_domain), 
+            "as_range": sorted(as_range)
+        }

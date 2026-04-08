@@ -1,5 +1,6 @@
 '''
 NOTE: I suppose this is the OBDA layer, so maybe object.py is more appropraite?
+NOTE: we could just use LogMap for this though... (would require further changes to its src)
 '''
 
 from __future__ import annotations
@@ -72,9 +73,12 @@ class ClassEntity(OntologyEntity):
         self.annotation["parents"] = onto.getAncestors(self.thing_class, include_self=False)
         self._children_loaded = False
         
+        ##
         # TODO: consider defering this to self._ensure_children_loaded (configurable)
-        self.annotation["children"] = onto.getDescendants(self.thing_class, include_self=False)
-        self._children_loaded = True
+        # NOTE: at present, we defer this to self._ensure_children_loaded (lazily load)
+        ##
+        #self.annotation["children"] = onto.getDescendants(self.thing_class, include_self=False)
+        #self._children_loaded = True
 
         for key in ["preferred_names", "synonyms", "all_names"]:
             if not self.annotation[key]:
@@ -110,6 +114,7 @@ class ClassEntity(OntologyEntity):
     # Legacy API (used throughout existing code)
     # def get_preffered_names(self) -> set[str]:
     #     return self.annotation["preffered_names"]
+
     def get_preffered_names(self) -> set[str]:
         return self.annotation["preferred_names"]
 
@@ -199,17 +204,37 @@ class ClassEntity(OntologyEntity):
 
         return sorted(siblings, key=_sort_key)[:max_count]
 
-    ###
-    # TODO: consider whether implementation is required or not
-    ###
-    def get_restrictions(self, max_count: int = 3):
-        ...
+    ################## TODO: review
 
     ###
     # TODO: consider whether implementation is required or not
+    # NOTE: included for the time being, consider removing if not required.
     ###
-    def get_relational_signature(self):
-        ...
+    def get_restrictions(self, max_count: int = 3) -> list[dict]:
+        """
+        Get OWL restrictions declared on this class.
+        See `logmap_llm.oracle.access.getClassRestrictions`.
+        """
+        all_restrictions = self.onto.getClassRestrictions(self.thing_class)
+        some_first = sorted(
+            all_restrictions,
+            key=lambda r: (0 if r["restriction_type"] == "some" else 1),
+        )
+        return some_first[:max_count]
+
+    ###
+    # TODO: consider whether implementation is required or not
+    # NOTE: included for the time being, consider removing if not required.
+    ###
+    def get_relational_signature(self) -> dict:
+        """
+        Get the relational signature of this class.
+        See `logmap_llm.oracle.access.getClassRelationalSignature`.
+        """
+        return self.onto.getClassRelationalSignature(self.thing_class)
+
+    
+    ################## END TODO: review
 
 
     def get_attribute_relatives_names(self, relatives_name: str, name_type: str) -> list[set[str]]:
