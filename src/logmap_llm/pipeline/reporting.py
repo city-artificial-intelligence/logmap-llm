@@ -1,16 +1,15 @@
 """
-logmap_llm.pipeline.reporting — post-pipeline reporting utilities
+logmap_llm.pipeline.reporting
 """
-
 from __future__ import annotations
 
 import json
 import subprocess
 from pathlib import Path
 
-from logmap_llm.log_utils import info, step
+from logmap_llm.utils.logging import step
 from logmap_llm.config.schema import LogMapLLMConfig
-from logmap_llm.pipeline.types import (
+from logmap_llm.pipeline.contracts import (
     TimingRecord,
     EvaluationResult,
     OracleResult,
@@ -97,8 +96,8 @@ def print_experimental_parameters(
     print(f"  Task name           : {cfg.alignmentTask.task_name}")
     print(f"  Model               : {cfg.oracle.model_name}")
     print(f"  Endpoint            : {classify_endpoint(cfg.oracle.base_url)}")
-    print(f"  Prompt template     : {cfg.oracle.oracle_user_prompt_template_name}")
-    print(f"  Developer prompt    : {cfg.oracle.oracle_dev_prompt_template_name}")
+    print(f"  Prompt template     : {cfg.prompts.cls_usr_prompt_template_name}")
+    print(f"  Developer prompt    : {cfg.prompts.cls_dev_prompt_template_name}")
     print(f"  N prompts           : {prompt_result.n_prompts}")
     if oracle_result.oracle_params:
         params = oracle_result.oracle_params
@@ -122,8 +121,8 @@ def write_results_file(
     results = {
         "task_name": cfg.alignmentTask.task_name,
         "model_name": cfg.oracle.model_name,
-        "prompt_template": cfg.oracle.oracle_user_prompt_template_name,
-        "developer_prompt": cfg.oracle.oracle_dev_prompt_template_name,
+        "prompt_template": cfg.prompts.cls_usr_prompt_template_name,
+        "developer_prompt": cfg.prompts.cls_dev_prompt_template_name,
         "endpoint": classify_endpoint(cfg.oracle.base_url),
         "n_prompts": prompt_result.n_prompts,
         "oracle_params": oracle_result.oracle_params,
@@ -135,7 +134,7 @@ def write_results_file(
             "evaluate_seconds": timing.evaluate_seconds,
             "total_seconds": timing.total_seconds,
         },
-        "evaluation": eval_result.metrics,
+        "evaluation": eval_result.results if eval_result.results else eval_result.metrics,
     }
 
     with open(filepath, 'w') as fp:

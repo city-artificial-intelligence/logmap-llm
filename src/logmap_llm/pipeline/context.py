@@ -1,4 +1,4 @@
-'''
+"""
 logmap_llm.pipeline.context — provides the pipeline execution context
 
 (essentially) ported from:
@@ -12,14 +12,13 @@ between each stage in a training pipeline (think: wandb, etc).
 NOTE: When this context object grows or needs to reach deeply nested 
 modules, consider whether those modules should receive specific fields 
 or should simply accept full context.
-
-'''
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
 from logmap_llm.config.schema import LogMapLLMConfig
 from logmap_llm.pipeline.paths import PipelinePaths
-from logmap_llm.pipeline.logmap_interface import LogMapInterface
+from logmap_llm.interface import LogMapInterface
 
 
 @dataclass
@@ -28,4 +27,4 @@ class PipelineContext:
     cfg: LogMapLLMConfig
     run_paths: PipelinePaths
     logmap: LogMapInterface
-    track: str | None = None
+    config_path: str | None = None

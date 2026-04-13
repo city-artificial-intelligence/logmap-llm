@@ -1,10 +1,9 @@
-'''
-Ported from:
+"""
+logmap_llm.pipeline.paths
+"""
+from __future__ import annotations
 
-    https://github.com/jonathondilworth/logmap-llm/blob/jd-extended/pipeline_utils.py
-
-TODO: this needs to be well-documented.
-'''
+import os
 
 from pathlib import Path
 from logmap_llm.config.schema import LogMapLLMConfig
@@ -14,24 +13,21 @@ class PipelinePaths:
     """
     Manages pipeline artefact paths.
 
-    Uses the following naming convention:
-
-    - artefacts      : output_dir / f"{self.task_name}-{self.oupt_name}-{suffix}" / * files
-        ->  LogMap-LLM outputs (prompts, predictions, logs, eval)
-
-    - initial aligns : initial_dir / f"{self.task_name}-logmap_mappings.txt"
-        ->  LogMap's initial alignment outputs
-
-    - m_ask          : initial_dir / f"{self.task_name}-logmap_mappings_to_ask_oracle_user_llm.txt"
-        ->  m_ask is bundled with inital alignment files)
-    
-    - refined aligns : refined_dir / f"{self.task_name}-logmap_mappings.tsv"
-        ->  LogMap's refined alignment outputs
-
-    Does not perform I/O. callers read/write the returned Paths directly.
+    Naming convention:
+    - artefacts:      output_dir  / f"{task_name}-{oupt_name}-{suffix}"
+    - initial aligns: initial_dir / f"{task_name}-logmap_mappings.txt"
+    - m_ask:          initial_dir / f"{task_name}-logmap_mappings_to_ask_oracle_user_llm.txt"
+    - refined aligns: refined_dir / f"{task_name}-logmap_mappings.tsv"
     """
-    
-    def __init__(self, output_dir: str | Path, initial_dir: str | Path, refined_dir: str | Path, task_name: str, oupt_name: str):
+
+    def __init__(
+        self,
+        output_dir: str | Path,
+        initial_dir: str | Path,
+        refined_dir: str | Path,
+        task_name: str,
+        oupt_name: str,
+    ):
         self.output_dir = Path(output_dir)
         self.initial_dir = Path(initial_dir)
         self.refined_dir = Path(refined_dir)
@@ -39,13 +35,14 @@ class PipelinePaths:
         self.oupt_name = oupt_name
 
     @classmethod
-    def from_config(cls, cfg: LogMapLLMConfig) -> "PipelinePaths":
+    def from_config(cls, cfg: LogMapLLMConfig) -> PipelinePaths:
+        """Construct from a validated LogMapLLMConfig"""
         return cls(
             output_dir=cfg.outputs.logmapllm_output_dirpath,
             initial_dir=cfg.outputs.logmap_initial_alignment_output_dirpath,
             refined_dir=cfg.outputs.logmap_refined_alignment_output_dirpath,
             task_name=cfg.alignmentTask.task_name,
-            oupt_name=cfg.oracle.oracle_user_prompt_template_name,
+            oupt_name=cfg.prompts.cls_usr_prompt_template_name,
         )
 
     def _artifact(self, suffix: str) -> Path:
@@ -71,17 +68,28 @@ class PipelinePaths:
 
     def logmap_mappings(self) -> Path:
         return self.initial_dir / f"{self.task_name}-logmap_mappings.txt"
+    
+    def logmap_mappings_tsv(self) -> Path:
+        return self.initial_dir / f"{self.task_name}-logmap_mappings.tsv"
 
     def logmap_m_ask(self) -> Path:
         return self.initial_dir / f"{self.task_name}-logmap_mappings_to_ask_oracle_user_llm.txt"
 
     def refined_mappings_tsv(self) -> Path:
         return self.refined_dir / f"{self.task_name}-logmap_mappings.tsv"
-    
+
+    def create_base_dirs(self) -> bool:
+        os.makedirs(self.output_dir, exist_ok=True)
+        os.makedirs(self.initial_dir, exist_ok=True)
+        os.makedirs(self.refined_dir, exist_ok=True)
+        return (
+            os.path.exists(self.output_dir) 
+            and os.path.exists(self.initial_dir) 
+            and os.path.exists(self.refined_dir)
+        )
+
     def summary(self) -> str:
-        """
-        human-readable summary of resolved artifact paths
-        """
+        """Human-readable summary of resolved artifact paths"""
         lines = [
             f"  Task                : {self.task_name}",
             f"  Prompt template     : {self.oupt_name}",

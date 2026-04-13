@@ -1,18 +1,23 @@
+"""
+logmap_llm.oracle.prompts.formatting
+Prompt formatting utilities (originally prompt_utils.py)
+"""
 from __future__ import annotations
 
 from collections import defaultdict
 
-from logmap_llm.ontology.entities import OntologyEntryAttr
+from logmap_llm.ontology.object import OntologyEntryAttr
 
-
+###
+# Name formatting helpers (original prompt_utils.py)
+###
 
 def get_name_string(name_set: set | list | OntologyEntryAttr) -> str:
     """Get a string representation of the name set."""
     # If the name_set is a set or list, join the elements with a comma
     if isinstance(name_set, (set, list)):
-        return ", ".join(sorted(name_set)) # sorts alphanumerically
+        return ", ".join(sorted(name_set))
     return str(name_set)
-
 
 
 def get_single_name(name_set: set | list | str | OntologyEntryAttr) -> str | None:
@@ -20,27 +25,28 @@ def get_single_name(name_set: set | list | str | OntologyEntryAttr) -> str | Non
     return next(iter(name_set), None) if isinstance(name_set, (set, list)) else name_set
 
 
-
 def select_best_direct_entity_names(
-    src_entity: OntologyEntryAttr, tgt_entity: OntologyEntryAttr
-) -> list[OntologyEntryAttr, OntologyEntryAttr]:
+    src_entity: OntologyEntryAttr, tgt_entity: OntologyEntryAttr,
+) -> list:
     """If there are multiple direct parents, select one and find child element for it."""
-    src_parents = next(iter(src_entity.get_direct_parents()), None)     # default: None
-    tgt_parents = next(iter(tgt_entity.get_direct_parents()), None)     # default: None
+    src_parents = next(iter(src_entity.get_direct_parents()), None)
+    tgt_parents = next(iter(tgt_entity.get_direct_parents()), None)
     return [
-        get_name_string(x.get_preffered_names()) if x else None
+        get_name_string(x.get_preferred_names()) if x else None
         for x in [src_parents, tgt_parents, src_entity, tgt_entity]
     ]
 
 
-
 def format_hierarchy(
-    hierarchy_dict: dict[int, set[OntologyEntryAttr]], no_level: bool = False, add_thing: bool = True
-) -> str:
+    hierarchy_dict: dict[int, set[OntologyEntryAttr]],
+    no_level: bool = False,
+    add_thing: bool = True,
+) -> list[str] | str:
+    """Format a hierarchy dict into a displayable string or list."""
     formatted = []
     for level, parents in sorted(hierarchy_dict.items()):
         parent_name = get_name_string(
-            sorted([get_name_string(i.get_preferred_names()) for i in parents]) # sorts alphanumerically
+            sorted([get_name_string(i.get_preferred_names()) for i in parents])
         )
 
         if not add_thing and parent_name == "Thing":
@@ -54,11 +60,15 @@ def format_hierarchy(
     return formatted if no_level else "\n".join(formatted)
 
 
-
 def select_best_direct_entity_names_with_synonyms(
-    src_entity: OntologyEntryAttr, tgt_entity: OntologyEntryAttr, add_thing: bool = True
+    src_entity: OntologyEntryAttr,
+    tgt_entity: OntologyEntryAttr,
+    add_thing: bool = True,
 ) -> list:
-    """Select preferred names and synonyms for source and target entities and their direct parents."""
+    """Select preferred names and synonyms for source and target entities.
+
+    Returns [src_parent, tgt_parent, src_name, tgt_name, src_synonyms, tgt_synonyms].
+    """
 
     def get_parent_name(entity: OntologyEntryAttr) -> str | None:
         parent = next(iter(entity.get_direct_parents()), None)
@@ -68,9 +78,8 @@ def select_best_direct_entity_names_with_synonyms(
         return parent_name
 
     def get_clean_synonyms(entity: OntologyEntryAttr) -> list[str]:
-        synonyms = [str(s) for s in entity.get_synonyms()]  # create a copied list
-        # FIX: return an empty list if the set of synonyms only contains this named entity
-        entity_name = str(entity.thing_class.name) 
+        synonyms = [str(s) for s in entity.get_synonyms()]
+        entity_name = str(entity.thing_class.name)
         return [] if len(synonyms) == 1 and synonyms[0] == entity_name else synonyms
 
     src_parent_name = get_parent_name(src_entity)
@@ -82,22 +91,21 @@ def select_best_direct_entity_names_with_synonyms(
     tgt_synonyms = get_clean_synonyms(tgt_entity)
 
     return [
-        src_parent_name,  # string | None
-        tgt_parent_name,  # string | None
-        src_entity_name,  # string
-        tgt_entity_name,  # string
-        src_synonyms,  # list of strings
-        tgt_synonyms,  # list of strings
+        src_parent_name,
+        tgt_parent_name,
+        src_entity_name,
+        tgt_entity_name,
+        src_synonyms,
+        tgt_synonyms,
     ]
-
 
 
 def select_best_sequential_hierarchy_with_synonyms(
     src_entity: OntologyEntryAttr,
     tgt_entity: OntologyEntryAttr,
-    max_level: int
+    max_level: int,
 ) -> tuple[list[str], list[str], list[list[str]], list[list[str]]]:
-    """Select the best synonyms for an entity and its hierarchical parents."""
+    """Select synonyms for an entity and its hierarchical parents."""
     src_parents_by_levels = src_entity.get_parents_by_levels(max_level)
     tgt_parents_by_levels = tgt_entity.get_parents_by_levels(max_level)
 
@@ -112,14 +120,16 @@ def select_best_sequential_hierarchy_with_synonyms(
         return [], ""
 
     def clean(synonyms: list, cls: str) -> list[str]:
-        return [] if len(synonyms) == 1 and next(iter(synonyms)) == cls else synonyms
+        return (
+            [] if len(synonyms) == 1 and next(iter(synonyms)) == cls else synonyms
+        )
 
     src_results = [
-        clean(*get_synonyms_and_class(src_parents_by_levels, i)) 
+        clean(*get_synonyms_and_class(src_parents_by_levels, i))
         for i in range(len(src_parents_by_levels))
     ]
     tgt_results = [
-        clean(*get_synonyms_and_class(tgt_parents_by_levels, i)) 
+        clean(*get_synonyms_and_class(tgt_parents_by_levels, i))
         for i in range(len(tgt_parents_by_levels))
     ]
 
@@ -127,19 +137,14 @@ def select_best_sequential_hierarchy_with_synonyms(
 
 
 ###
-# TODO: some of this needs to be reworked.
+# Sibling context formatting
 ###
-
 
 def format_sibling_context(
     sibling_labels: list[str] | list[tuple[str, float]],
     parent_name: str,
 ) -> str:
-    """
-    Format sibling labels into a natural-language context clause.
-    Returns a clause like: Other "Bone" concepts include "Scaphoid" and "Lunate".
-    Returns an empty string if no sibling labels are provided.
-    """
+    """Format sibling labels into a natural-language context clause."""
     if not sibling_labels:
         return ""
 
@@ -159,19 +164,17 @@ def format_sibling_context(
     return f'Other "{parent_name}" concepts include {sibling_text}.'
 
 
+###
+# Property prompt formatting helpers
+###
 
 def format_synonyms_parenthetical(synonyms: set[str], preferred_name: str) -> str:
-    """
-    Format synonyms as a parenthetical clause.
-    Returns a string like ' (also known as "X", "Y")' if there are synonyms beyond the preferred name.
-    Returns empty string otherwise.
-    """
+    """Format synonyms as a parenthetical clause."""
     extra_syns = sorted(s for s in synonyms if s != preferred_name)
     if not extra_syns:
         return ""
     quoted = ", ".join(f'"{s}"' for s in extra_syns)
     return f" (also known as {quoted})"
-
 
 
 def format_domain_range_clause(
@@ -182,9 +185,7 @@ def format_domain_range_clause(
     range_synonyms: set[str] | None = None,
     include_synonyms: bool = False,
 ) -> str:
-    """
-    Format a property with optional domain/range context
-    """
+    """Format a property with optional domain/range context."""
     desc = f'"{prop_label}"'
 
     if domain_names or range_names:
@@ -204,11 +205,12 @@ def format_domain_range_clause(
     return desc
 
 
+###
+# Restriction context formatting
+###
 
 def format_restriction_context(restrictions: list[dict]) -> str:
-    """
-    Format class restriction axioms as a natural-language clause
-    """
+    """Format class restriction axioms as a natural-language clause."""
     if not restrictions:
         return ""
 
@@ -219,6 +221,7 @@ def format_restriction_context(restrictions: list[dict]) -> str:
         'max': 'relates to at most',
         'exactly': 'relates to exactly',
     }
+
     clauses = []
     for r in restrictions:
         verb = VERBS.get(r['restriction_type'], 'relates to')
@@ -234,11 +237,12 @@ def format_restriction_context(restrictions: list[dict]) -> str:
     return f"It {joined}."
 
 
+###
+# Relational signature formatting
+###
 
 def format_relational_signature(signature: dict) -> str:
-    """
-    Verbalise a class's relational signature as natural-language context
-    """
+    """Verbalise a class's relational signature as natural-language context."""
     domain_props = signature.get('as_domain', [])
     range_props = signature.get('as_range', [])
 
@@ -257,11 +261,12 @@ def format_relational_signature(signature: dict) -> str:
     return f"In its ontology, it appears as {joined}."
 
 
+###
+# Property characteristic formatting
+###
 
 def format_property_characteristics(characteristics: list[str], inverse_name: str | None) -> str:
-    """
-    Verbalise property characteristics and inverse as natural-language context
-    """
+    """Verbalise property characteristics and inverse as natural-language context."""
     parts = []
 
     if characteristics:
@@ -278,45 +283,35 @@ def format_property_characteristics(characteristics: list[str], inverse_name: st
     return f"It is {joined}."
 
 
+###
+# Instance prompt formatting helpers (KG track)
+###
 
 def format_instance_type_clause(type_names: list[str]) -> str:
-    """
-    Format rdf:type names into a natural-language clause
-    """
+    """Format rdf:type names into a natural-language clause."""
     if not type_names:
         return ""
     if len(type_names) == 1:
         return f'which is a "{type_names[0]}"'
-    # else:
     quoted = [f'a "{t}"' for t in type_names]
     return "which is " + " and ".join(quoted)
 
 
-
 def _format_property_value(value: str, datatype: str) -> str:
-    """
-    Format a property value with type-appropriate quoting
-    """
-    numeric_types = {
-        "integer", "int", "float", "double", "decimal",
-        "long", "short", "nonNegativeInteger", 
-        "positiveInteger", "negativeInteger"
-    }
+    """Format a property value with type-appropriate quoting."""
+    numeric_types = {"integer", "int", "float", "double", "decimal",
+                     "long", "short", "nonNegativeInteger",
+                     "positiveInteger", "negativeInteger"}
     if datatype in numeric_types:
         return value
-    # else:
     return f'"{value}"'
 
 
-
-def format_instance_attribute_clause(
-    properties: list[dict],
-    max_properties: int = 5,
-) -> str:
+def format_instance_attribute_clause(properties: list[dict], max_properties: int = 5) -> str:
     """
     Format instance property-value pairs as natural-language clauses.
-    Returns clauses joined by " and " ...
-    For example: 'is "homeworld" "Tatooine" and is "species" "Human"'
+    Returns clauses joined by " and ", e.g.:
+    'is "homeworld" "Tatooine" and is "species" "Human"'
     """
     if not properties:
         return ""
@@ -336,11 +331,8 @@ def format_instance_attribute_clause(
     return " and ".join(f"is {c}" for c in clauses)
 
 
-
 def _get_property_value(prop: dict) -> str:
-    """
-    Extract a comparable value string from a property dict
-    """
+    """Extract a comparable value string from a property dict."""
     if "value" in prop:
         return str(prop["value"]).lower().strip()
     if "object_label" in prop:
@@ -348,11 +340,8 @@ def _get_property_value(prop: dict) -> str:
     return ""
 
 
-
 def _find_best_pair(src_entries: list[dict], tgt_entries: list[dict]) -> tuple[dict, dict]:
-    """
-    For a shared predicate with multiple values per side, find the best pair
-    """
+    """For a shared predicate with multiple values per side, find the best pair."""
     tgt_by_value = {}
     for t in tgt_entries:
         val = _get_property_value(t)
@@ -374,31 +363,29 @@ def select_intersecting_properties(
     intersection_only: bool = False,
     predicate_entropies: dict | None = None,
 ) -> tuple[list[dict], list[dict]]:
-    """
-    Select properties for prompt inclusion, prioritising shared predicates
-    TODO: consider refactoring this function, it's a little difficult to follow in places
-    """
+    """Select properties for prompt inclusion, prioritising shared predicates."""
     src_all_by_label: dict[str, list[dict]] = defaultdict(list)
+    
     for p in src_props:
         label = p["predicate_label"].lower().strip()
         src_all_by_label[label].append(p)
 
     tgt_all_by_label: dict[str, list[dict]] = defaultdict(list)
+    
     for p in tgt_props:
         label = p["predicate_label"].lower().strip()
         tgt_all_by_label[label].append(p)
 
-    # set intersection
     shared_labels = set(src_all_by_label.keys()) & set(tgt_all_by_label.keys())
 
     shared_best_pairs = {}
+    
     for label in shared_labels:
         best_src, best_tgt = _find_best_pair(
             src_all_by_label[label], tgt_all_by_label[label]
         )
         shared_best_pairs[label] = (best_src, best_tgt)
 
-    # TODO: consider refactor
     if predicate_entropies is not None and shared_labels:
         def _entropy_for_label(label):
             src_entry, tgt_entry = shared_best_pairs[label]
@@ -427,6 +414,7 @@ def select_intersecting_properties(
         selected_tgt_labels.add(label)
 
     if not intersection_only:
+        
         if len(src_selected) < max_properties:
             for label in sorted(set(src_all_by_label.keys()) - shared_labels):
                 if label in selected_src_labels:

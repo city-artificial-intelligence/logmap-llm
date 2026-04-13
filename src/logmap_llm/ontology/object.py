@@ -45,6 +45,19 @@ class OntologyEntity(ABC):
     def __hash__(self) -> int:
         return hash(getattr(self, 'thing_class', id(self)))
 
+    @property
+    def iri(self) -> str:
+        """
+        A previously overlooked (during refactoring) late addition (12th April 26):
+        Includes the canonical IRI, as accessible from any class that extends the
+        ABS by directly calling <TYPE>Entity.iri (which would be most intuitive)
+        and has been the source of a great deal of pain!
+        Its now sourced from self.annotation["uri"], which every subclass populates
+        via their constructor (during 'annotate_entry); may raise a key error if
+        some problem has occurred during initialisation (ie. is a feature, not a bug)
+        """
+        return self.annotation["uri"]
+
 
 
 class ClassEntity(OntologyEntity):
@@ -103,6 +116,9 @@ class ClassEntity(OntologyEntity):
             set[str]: The names of the entry.
 
         """
+        return self.annotation[name_type]
+
+    def _get_entry_names(self, name_type: str) -> set[str]:
         return self.annotation[name_type]
 
     def get_all_entity_names(self) -> set[str]:
@@ -204,12 +220,8 @@ class ClassEntity(OntologyEntity):
 
         return sorted(siblings, key=_sort_key)[:max_count]
 
-    ################## TODO: review
+    
 
-    ###
-    # TODO: consider whether implementation is required or not
-    # NOTE: included for the time being, consider removing if not required.
-    ###
     def get_restrictions(self, max_count: int = 3) -> list[dict]:
         """
         Get OWL restrictions declared on this class.
@@ -222,10 +234,7 @@ class ClassEntity(OntologyEntity):
         )
         return some_first[:max_count]
 
-    ###
-    # TODO: consider whether implementation is required or not
-    # NOTE: included for the time being, consider removing if not required.
-    ###
+
     def get_relational_signature(self) -> dict:
         """
         Get the relational signature of this class.
@@ -233,8 +242,6 @@ class ClassEntity(OntologyEntity):
         """
         return self.onto.getClassRelationalSignature(self.thing_class)
 
-    
-    ################## END TODO: review
 
 
     def get_attribute_relatives_names(self, relatives_name: str, name_type: str) -> list[set[str]]:
@@ -379,7 +386,7 @@ class PropertyEntity(OntologyEntity):
     def __eq__(self, other) -> bool:
         if not isinstance(other, PropertyEntity):
             return False
-        return self.annotation.get("uri") == other.annotation.get("uri")
+        return self.iri == other.iri
 
     def __hash__(self) -> int:
         return hash(self.annotation.get("uri", id(self)))

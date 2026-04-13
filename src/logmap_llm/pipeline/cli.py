@@ -9,7 +9,9 @@ from argparse import ArgumentParser, Namespace
 
 
 def parse_args() -> Namespace:
+    
     parser = ArgumentParser(description="LogMap-LLM: Python-based LogMap LLM extension")
+
     parser.add_argument(
         "--config", "-c",
         type=str,
@@ -32,16 +34,10 @@ def parse_args() -> Namespace:
         ),
     )
     parser.add_argument(
-        "--track",
-        type=str,
-        default=None,
-        choices=["conference", "bioml", "anatomy", "knowledgegraph"],
-        help="Track identifier for track-specific pipeline behaviour (TODO)",
-    )
-    parser.add_argument(
         "--no-cache",
         action="store_true",
         default=False,
         help="Disable owlready2 quadstore caching (parse ontologies from scratch) (TODO)",
     )
+
     return parser.parse_args()

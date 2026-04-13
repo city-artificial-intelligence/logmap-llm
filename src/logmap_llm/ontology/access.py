@@ -1,3 +1,9 @@
+"""
+logmap_llm.ontology.access
+ontology access via owlready2 (ess. OBDA layer, 'object.py' -> ORM)
+each OntologyAccess instance creates its own owlready2.World 
+which is an isolated SQLite quadstore (prevents shared-state issues)
+"""
 from __future__ import annotations
 
 import contextlib
@@ -5,15 +11,18 @@ import logging
 from enum import Enum
 
 import owlready2
+from owlready2 import sync_reasoner, sync_reasoner_pellet
+
+import math
+from collections import Counter
+
+from logmap_llm.constants import VERBOSE
 
 # DH: We have removed the dependency on rdflib. It was only needed to
 # satisfy a return-type hint on method getGraph(). We removed the hint,
 # and so we comment-out the import of rdflib.  Eventually we will remove
 # this commented-out import altogether.
 #import rdflib
-
-from owlready2 import sync_reasoner, sync_reasoner_pellet
-
 
 class Reasoner(Enum):
     HERMIT = 0  # Not really adding the right set of entailments
@@ -94,19 +103,38 @@ class AnnotationURIs:
 
 
 class OntologyAccess:
-    
+        
     def __init__(
         self,
         urionto: str,
         annotate_on_init: bool = True,
-        cache=None
+        cache=None,
     ) -> None:
-        
+        """
+        urionto : str - URI or file path to the ontology.
+        annotate_on_init : bool - if true, load the ontology and index annotations immediately.
+        cache : object, optional - caching interface (Branch 2); if None => no caching.
+        """
         logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.WARNING)
         self.urionto = str(urionto)
         self._cache = cache
 
-        self.world = owlready2.World()
+        # TODO: check this claim (I can't quite recall whether this was ths issue)
+        # JD: each `OntologyAccess`` instance is assigned its own isolated 
+        # World (using an independent in-memory SQLite quadstore; this 
+        # prevents shared-state issues (i.e., global entity cache issues,
+        # and importantly: rdflib store lock contention) that caused 
+        # intermittent problems previously when multiple `OntologyAccess`
+        # objects were created in the same process using a shared default_world.
+
+        # When cache_dir is provided, the World is backed by a
+        # process-private copy of a persistent SQLite quadstore.
+        # This skips the expensive OWL/RDF parse on subsequent runs.
+
+        if self._cache is not None:
+            self.world = self._cache.get_cached_world(self.urionto)
+        else:
+            self.world = owlready2.World()
 
         if annotate_on_init:
             self.load_ontology()
@@ -122,10 +150,13 @@ class OntologyAccess:
     def load_ontology(
         self,
         reasoner: Reasoner = Reasoner.NONE,
-        memory_java: str = "10240"
+        memory_java: str = "10240",
     ) -> None:
+        if self._cache is not None:
+            self.onto = self.world.get_ontology(self.urionto)
+        else:
+            self.onto = self.world.get_ontology(self.urionto).load()
         
-        self.onto = self.world.get_ontology(self.urionto).load()
         owlready2.JAVA_MEMORY = memory_java
 
         # DH: If we set log level here, then the 2nd call we make
@@ -141,11 +172,9 @@ class OntologyAccess:
 
         if reasoner == Reasoner.PELLET:
             try:
-                with self.onto:  # it does add inferences to ontology
-                    # Is this wrt data assertions? Check if necessary
-                    # infer_property_values = True, infer_data_property_values = True
+                with self.onto:
                     logging.info("Classifying ontology with Pellet...")
-                    sync_reasoner_pellet(x=self.world)  # it does add inferences to ontology
+                    sync_reasoner_pellet(x=self.world)
                     unsat = len(list(self.onto.inconsistent_classes()))
                     logging.info("Ontology successfully classified.")
                     if unsat > 0:
@@ -156,9 +185,9 @@ class OntologyAccess:
 
         elif reasoner == Reasoner.HERMIT:
             try:
-                with self.onto:  # it does add inferences to ontology
+                with self.onto:
                     logging.info("Classifying ontology with HermiT...")
-                    sync_reasoner(x=self.world)  # HermiT doe snot work very well....
+                    sync_reasoner(x=self.world)
                     unsat = len(list(self.onto.inconsistent_classes()))
                     logging.info("Ontology successfully classified.")
                     if unsat > 0:
@@ -177,22 +206,22 @@ class OntologyAccess:
         self._uri_to_class = {cls.iri: cls for cls in self.onto.classes()}
         self._uri_to_entity = dict(self._uri_to_class)
         self._uri_to_property = {}
-        self._uri_to_individual = {}
         
         for prop in self.onto.properties():
-            self._uri_to_entity[prop.iri] = prop     # should we store all URIs in the same dict, perhaps?
-            self._uri_to_property[prop.iri] = prop   # TODO: revisit ^^^
+            self._uri_to_entity[prop.iri] = prop
+            self._uri_to_property[prop.iri] = prop
         
-        self._uri_to_individual = {}
-        for ind in self.onto.individuals():
-            if hasattr(ind, 'iri') and ind.iri:
-                self._uri_to_individual[ind.iri] = ind
+        self._uri_to_individual = {
+            ind.iri: ind for ind in self.onto.individuals()
+            if hasattr(ind, 'iri') and ind.iri
+        }
 
         print(f"There are {len(self.graph)} triples in the ontology")
-        
         print(f"Indexed {len(self._uri_to_class)} classes.")
         print(f"Indexed {len(self._uri_to_property)} properties.")
         print(f"Indexed {len(self._uri_to_individual)} individuals.")
+        
+
 
 
     def getOntology(self) -> owlready2.Ontology:
@@ -329,42 +358,25 @@ class OntologyAccess:
         }}
         }}"""
 
-    def indexAnnotations(self) -> None:
+    def legacy_indexAnnotations(self) -> None:
         annotation_uris = AnnotationURIs()
         self.entityToSynonyms = {}
         self.allEntityAnnotations = {}
         self.preferredLabels = {}
-        self.populateAnnotationDicts(
+        self.legacy_populateAnnotationDicts(
             annotation_uris.get_annotation_uris_for_synonyms(),
             self.entityToSynonyms,
         )
-        self.populateAnnotationDicts(
+        self.legacy_populateAnnotationDicts(
             annotation_uris.get_annotation_uris_for_lexical_annotations(),
             self.allEntityAnnotations,
         )
-        self.populateAnnotationDicts(
+        self.legacy_populateAnnotationDicts(
             annotation_uris.get_annotation_uris_for_preferred_labels(),
             self.preferredLabels,
         )
 
-    def populateAnnotationDicts(self, annotation_uris: set, dictionary: dict) -> None:
-        """Populate the given dictionary with annotations from the provided URIs.
-
-        This method queries a graph for annotations based on the provided URIs and
-        populates the given dictionary with the results. Only annotations with
-        language set to English or None are added to the dictionary.
-
-        Args:
-            annotation_uris (list): A list of annotation property URIs to query.
-            dictionary (dict): A dictionary to populate with the query results.
-                               The keys are the string representations of the
-                               annotation subjects, and the values are sets of
-                               annotation values.
-
-        Returns:
-            None
-
-        """
+    def legacy_populateAnnotationDicts(self, annotation_uris: set, dictionary: dict) -> None:
         for ann_prop_uri in annotation_uris:
             results = self.queryGraph(self.getQueryForAnnotations(ann_prop_uri))
             for row in results:
@@ -375,7 +387,83 @@ class OntologyAccess:
                         dictionary[str(row[0])].add(row[1].value)
                 except AttributeError:
                     pass
-        return
+
+    def indexAnnotations(self) -> None:
+        """
+        lexical_uris is a superset of both synonym_uris and preferred_uris
+        We query each annotation property once via direct rdflib triple
+        lookups (bypassing per-URI SPARQL query parsing overhead), then
+        distribute each result to the appropriate subset dicts.
+        this therefore replaces the previous three-call pattern that 
+        ran ~58 individual SPARQL queries: ~21 synonym + ~33 lexical 
+        + ~4 preferred, many of which redundantly queried the same URIs
+        """
+        annotation_uris = AnnotationURIs()
+        self.entityToSynonyms = {}
+        self.allEntityAnnotations = {}
+        self.preferredLabels = {}
+        synonym_uris = annotation_uris.get_annotation_uris_for_synonyms()
+        preferred_uris = annotation_uris.get_annotation_uris_for_preferred_labels()
+        lexical_uris = annotation_uris.get_annotation_uris_for_lexical_annotations()
+        self._populateAllAnnotationDicts(lexical_uris, synonym_uris, preferred_uris)
+
+    def _populateAllAnnotationDicts(self, all_uris: set, synonym_uris: set, preferred_uris: set) -> None:
+        """
+        Populate all three annotation dictionaries in a single pass.
+
+        Iterates over the superset of annotation URIs (lexicalAnnotationURIs)
+        once using direct rdflib triple-pattern lookups and distributes each
+        result to the appropriate subset dictionaries based on set membership.
+
+        For each annotation property URI, both direct annotations (where the
+        object is a Literal) and indirect annotations (where the object is an
+        intermediate node whose rdfs:label provides the text) are resolved.
+
+        Only annotations with language tag 'en' or 'None' (untagged) are
+        included, matching the original per-URI SPARQL query behaviour.
+
+        NOTE: This could be problematic for the Digital Humanities track.
+        TODO: check that DH (which I believe is multilinguial) runs as expected.
+        """
+        from rdflib import URIRef, Literal
+
+        rdfs_label = URIRef("http://www.w3.org/2000/01/rdf-schema#label")
+
+        for ann_uri_str in all_uris:
+            
+            ann_ref = URIRef(ann_uri_str)
+            in_synonyms = ann_uri_str in synonym_uris
+            in_preferred = ann_uri_str in preferred_uris
+
+            for s, _p, o in self.graph.triples((None, ann_ref, None)):
+                subj_str = str(s)
+                if isinstance(o, Literal):
+                    # direct annotation (apply language filter) TODO: possibly revise
+                    if o.language is not None and o.language != "en":
+                        continue
+                    self._distribute_annotation(subj_str, o.value, in_synonyms, in_preferred)
+                else:
+                    # indirect: annotation points to an intermediate node;
+                    # follow to rdfs:label for the actual annotation text
+                    for _s, _p, label in self.graph.triples((o, rdfs_label, None)):
+                        if not isinstance(label, Literal):
+                            continue
+                        if label.language is not None and label.language != "en":
+                            continue
+                        self._distribute_annotation(subj_str, label.value, in_synonyms, in_preferred)
+
+    def _distribute_annotation(self, subj: str, value, in_synonyms: bool, in_preferred: bool) -> None:
+        """
+        Adds an annotation value to the appropriate dictionaries.
+        Always adds to 'allEntityAnnotations' (the lexical superset).
+        Conditionally adds to 'entityToSynonyms' and 'preferredLabels'
+        which is based on the annotation propertys category membership
+        """
+        self.allEntityAnnotations.setdefault(subj, set()).add(value)
+        if in_synonyms:
+            self.entityToSynonyms.setdefault(subj, set()).add(value)
+        if in_preferred:
+            self.preferredLabels.setdefault(subj, set()).add(value)
 
     def getSynonymsNames(self, entity: owlready2.Thing) -> set[str]:
         if entity.iri not in self.entityToSynonyms:
@@ -568,32 +656,35 @@ class OntologyAccess:
         }
     
 
-    def compute_predicate_entropies(self, uri_pattern="/property/") -> dict:
+    def compute_predicate_entropies(self, uri_pattern: str = "/property/") -> dict:
         """
-        computes the Shannon entropy of value distributions (for matchable predicates)
-        A higher entropy => the predicate is more discriminating for entity resolution
+        Compute Shannon entropy of value distributions for matchable predicates
+        higher entropy -> the predicate is more discriminating for entity resolution
         """
-        import math
-        from rdflib import URIRef
-        from collections import Counter
+        # caching mechanism
+        if not hasattr(self, "_entropy_cache"):
+            self._entropy_cache: dict[str, dict] = {}
+        if uri_pattern in self._entropy_cache:
+            return self._entropy_cache[uri_pattern]
 
-        predicate_values: dict[str, Counter] = {}
-        
-        for s, p, o in self.graph.triples((None, None, None)):
-            p_uri = str(p)
-            if uri_pattern not in p_uri:
+        entropies: dict[str, float] = {}
+
+        unique_predicates = set(self.graph.predicates(None, None))
+
+        for pred in unique_predicates:
+            pred_uri = str(pred)
+            if uri_pattern not in pred_uri:
                 continue
-            if p_uri not in predicate_values:
-                predicate_values[p_uri] = Counter()
-            predicate_values[p_uri][str(o)] += 1
 
-        entropies = {}
+            value_counts: Counter = Counter()
+            for _s, _p, obj in self.graph.triples((None, pred, None)):
+                value_counts[str(obj)] += 1
 
-        for pred_uri, value_counts in predicate_values.items():
             total = sum(value_counts.values())
             if total <= 1:
                 entropies[pred_uri] = 0.0
                 continue
+
             entropy = 0.0
             for count in value_counts.values():
                 p = count / total
@@ -601,6 +692,7 @@ class OntologyAccess:
                     entropy -= p * math.log2(p)
             entropies[pred_uri] = entropy
 
+        self._entropy_cache[uri_pattern] = entropies
         return entropies
     
     
