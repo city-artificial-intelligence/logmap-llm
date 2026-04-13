@@ -1,310 +1,109 @@
 '''
-This module contains OracleConsultationManagers.
+logmap_llm.oracle.manager
+Contains OracleConsultationManager which manages LLM interactions via the OpenAI SDK. 
+Supporting both OpenRouter and local endpoints (vLLM, SGLang).
 '''
 from __future__ import annotations
-
 from openai import OpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from logmap_llm.constants import (
     BinaryOutputFormat,
+    BinaryOutputFormatWithReasoning,
+    YesNoOutputFormat,
+    YesNoOutputFormatWithReasoning,
     LLMCallOutput,
     TokensUsage,
     POSITIVE_TOKENS,
     NEGATIVE_TOKENS,
+    InteractionStyle,
+    RESPONSE_FORMAT_FOR_UNSTRUCTURED_RESPONSE,
+    VERBOSE,
+    VERY_VERBOSE,
+)
+from logmap_llm.utils.misc import resolve_response_format_to_str
+from logmap_llm.utils.logging import (
+    info,
+    warn,
+    warning,
+    critical,
+    debug,
 )
 import json
-import threading
 
-class OracleConsultationManager_OpenAI:
-    '''
-    An OracleConsultationManager to manage consultations with an
-    Oracle (i.e. interactions with an LLM).
 
-    This OracleConsultationManager uses the OpenAI API to connect
-    with LLM endpoints.
+class OracleConsultationManager:
+    """
+    Manages consultations with an LLM Oracle via OpenAI-compatible API.
+    Supports OpenRouter, vLLM, SGLang, and any OpenAI-compatible endpoint.
+    """
 
-    Using this OracleConsultationManager, LogMap-LLM users can
-    connect and interact with any LLM provider that supports the
-    OpenAI API. This includes OpenAI itself, of course.
+    def __init__(self, api_key: str, model_name: str, interaction_style: str, base_url: str, temperature: float, top_p: float, 
+                 reasoning_effort: str | None, max_completion_tokens: int, enable_thinking: bool, supports_chat_template_kwargs: bool | None = None,
+                 response_format: BinaryOutputFormat | BinaryOutputFormatWithReasoning | YesNoOutputFormat | YesNoOutputFormatWithReasoning | None = None):
 
-    Importantly, the LLM model aggregation platform OpenRouter
-    (www.openrouter.ai) supports the OpenAI API. When using
-    OpenRouter, LogMap-LLM interacts only with OpenRouter, and
-    OpenRouter handles the redirection of LogMap-LLM conversations
-    to whichever of 500+ different LLM models the LogMap-LLM user
-    selects.
-    '''
+        if VERBOSE:
+            debug(f"Initialising OracleConsultationManager ... with args:")
+            debug(f"model={model_name}")
+            debug(f"base_url={base_url}")
+            debug(f"temp={str(temperature)}")
+            debug(f"reasoning={str(enable_thinking)}")
+            debug(f"response_format={resolve_response_format_to_str(response_format)}")
 
-    def __init__(self, api_key, model_name, interaction_style_name, **kwargs):
-        '''
-        Instantiate the OracleConsultationManager.
-        
-        Parameters
-        ----------
-        api_key : str
-            An OpenRouter API key
-        model_name : str
-            And OpenRouter LLM model name
-        interaction_style_name : str
-            The style to be used for interacting with the LLM model
-        kwargs : various
-            see __init__() method below for details
-        '''
-        
-        # OpenRouter's base url
-        # (Note: This is the base URL for using OpenRouter's support
-        #  for OpenAI's Chat Completions API.
-        #  The base URL for using OpenRouter's support for OpenAI's
-        #  Responses API is 'https://openrouter.ai/api/v1/responses'.)
-        # TODO: externalise the base_url in config-basic.toml and let the user decide;
-        # we don't want or need to force them to use OpenRouter
-        self.base_url = kwargs.get("base_url", "https://openrouter.ai/api/v1")
-
-        if api_key is None:
-            raise ValueError('API key required')
         self.api_key = api_key
-
-        if model_name is None:
-            raise ValueError('LLM model name required')
         self.model_name = model_name
+        self.base_url = base_url
 
-        if interaction_style_name is None:
-            raise ValueError('Interaction style name required')
-        self.interaction_style_name = interaction_style_name
+        self.interaction_style = self._resolve_interaction_style(
+            interaction_style, self.base_url,
+        )
 
-        self._style_lock = threading.Lock()
+        if VERBOSE:
+            debug(f"(resolved argument) interaction_style={InteractionStyle(self.interaction_style)}")
 
-        # Instantiate a client through which to conduct actual LLM Oracle
-        # interactions. The client is an OpenAI SDK client, which
-        # OpenRouter supports as a kind of defacto standard. OpenRouter 
-        # forwards the requests it receives from this client to (some 
-        # provider of) the LLM model designated within the requests.
-        self.client = OpenAI(api_key=self.api_key, 
-                             base_url=self.base_url, 
-                             max_retries=2)
+        self.client = OpenAI(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            max_retries=2,
+        )
 
-        # - - - - - - -
-        # messages
-        # - - - - - - -
-
-        # The messages for a given interaction with some LLM.
-        # A list of dictionaries. Each 'message' is a dictionary that
-        # associates a 'role' with some 'content' (a text message).
-        # 
-        # Valid roles:
-        # - 'developer' : A developer message provides instructions to an LLM
-        #   model regarding the supposed situation, the task at hand, how it
-        #   should conduct itself, what persona to adopt, etc.. Developer 
-        #   messages have priority and are processed ahead of user messages.
-        #   For example: "Talk like a pirate."
-        # - 'user' : A user message represents a particular user question
-        #   or prompt to be put to an LLM, within the context of the situation
-        #   established by the developer instructions. A common scenario is
-        #   for one fixed 'developer' message to be used in multiple LLM
-        #   interactions, each one involving a particular (unique) 'user'
-        #   message (prompt).
-        # - 'assistant' : An assistant message represents an LLM's reply to
-        #   a particular user message. Pairs of 'user' and 'assistant' messages
-        #   can be assembled to provide/simulate statefulness across a
-        #   multi-interaction conversation.
         self.messages = []
         self._frozen = False
         self._frozen_messages = ()
 
-        # - - - - - - - - - - -
-        # LLM response format
-        # - - - - - - - - - - -
-        
-        # NOTE:
-        # The latest method for supporting Structured Outputs available
-        # in the OpenAI SDK involves the use of explicit class structures
-        # based on the pydantic BaseModel class. Many LLM models
-        # (typically earlier, older ones) do not support this latest
-        # method. LLM interactions will fail if the LogMap-LLM user
-        # chooses an OpenRouter LLM model that does not support this
-        # advanced method for ensuring LLM outputs are structured as
-        # requested.
-        #
-        # TODO:
-        # Allow the LogMap-LLM user to choose between two forms of
-        # supporting Structured Outputs, via the config.toml file.
-        # Make the strong method (pydantic BaseModel) the default,
-        # but allow the user to switch to the weaker but more
-        # widely supported method that uses a JSON schema to 
-        # express the desired output structure. This should make it
-        # more likely that LLM interactions with the user's desired
-        # LLM model will succeed rather than fail.
-        # IE set 'response_format' to 
-        # { "type": "json_schema", "json_schema": {...} } 
-        #
-        # For example: consider a new config.toml parameter:
-        # 'structured_output_support_level' = 'strong' or 'weak'
-        # And setting self.response_format would become
-        # conditional upon the value of this parameter, with an
-        # if/else
-        #
+        self.response_format = response_format
 
-        # An object specifying the format that the model must output.
-        self.response_format = kwargs.get("response_format", BinaryOutputFormat)
-        
-        # - - - - - - - - -
-        # LLM sampling
-        # - - - - - - - - -
+        self.temperature = temperature
+        self.top_p = top_p
+        self.reasoning_effort = reasoning_effort
+        self.max_completion_tokens = max_completion_tokens
+        self.enable_thinking = enable_thinking
 
-        # What sampling temperature to use, between 0 and 2. 
-        # Higher values like 1.2 will make the output more random, 
-        # while lower values like 0.2 will make it more focused 
-        # and deterministic. 
-        #
-        # OpenAI recommends altering 'temperature' or 'top_p' but not both.
-        #
-        # OpenAI default: 1
-        # 
-        # For ontology alignment, LogMap-LLM wants an LLM's decisions regarding
-        # a given mapping to be as deterministic as possible. Suppose the user
-        # performs 'n' runs of the same alignment task with identical
-        # configurations. For mapping 'x' in that task, we want the given
-        # LLM model to reach the same decision (make the same prediction),
-        # whether True or False, for all 'n' consultations (or get as close
-        # to this ideal as we can). In general, for ontology alignment, we want 
-        # to discourage randomness in LLM responses. 
-        # Hence LogMap-LLM encourages low temperatures.
-        #
-        # LogMap-LLM default: 0
-        #
-        self.temperature = kwargs.get("temperature", 0)
+        #################################
+        #-------------------------------#
+        # CHECK THE FOLLOWING (TODO)    #
+        #-------------------------------#
+        #################################
 
-        # An alternative to sampling with temperature, called nucleus sampling, 
-        # where the model considers the results of the tokens with top_p 
-        # probability mass. So 0.1 means only the tokens comprising the top 
-        # 10% probability mass are considered.
-        #
-        # OpenAI recommends altering 'top_p' or 'temperature' but not both.
-        #
-        # OpenAI default: 1
-        #
-        # LogMap-LLM default: 1
-        self.top_p = kwargs.get("top_p", 1)
-
-        # Given LogMap-LLM's defaults of 0 for 'temperature' and '1' for
-        # 'top_p', we see that LogMap-LLM defaults to using 'temperature'
-        # to control LLM sampling (and, hence, randomness) rather than 'top_p'. 
-
-        # TODO: Consider how to better police the setting of these two
-        # parameters, given OpenAI's recommendation that only one of them
-        # vary from the OpenAI default values at any one time.
-        # At the moment, we rely only on user knowledge to these details
-        # to avoid violating OpenAI's recommendations.
-
-        # - - - - - - - - - - -
-        # LLM reasoning 
-        # - - - - - - - - - - -
-
-        # Constrains effort on reasoning for reasoning models. 
-        # Currently supported values:
-        #   none, minimal, low, medium, high, and xhigh
-        # Reducing reasoning effort can result in faster responses 
-        # and fewer tokens used on reasoning in a response.
-        #
-        # LogMap-LLM default: 'none'
-        self.reasoning_effort = kwargs.get("reasoning_effort", 'none')
-
-        # - - - - - - - - - - - - -
-        # LLM max generated tokens
-        # - - - - - - - - - - - - -
-
-        # The maximum number of tokens that can be generated in the chat 
-        # completion. This value can be used to control costs for text 
-        # generated via API.
-        # 
-        # But 'max_tokens' is now deprecated by OpenAI (largely, it
-        # seems, because it pertains only to visible output tokens,
-        # not internal 'reasoning tokens' as well).
-        # OpenAI's o-series reasoning models don't even support the 
-        # max_tokens parameter; they use the successor parameter,
-        # max_completion_tokens, instead.
-        #
-        # LogMap-LLM respects the deprecation and uses the successor
-        # parameter instead.
-        #self.max_tokens = kwargs.get("max_tokens", 1000)
-
-        # An upper bound for the number of tokens that can be generated for 
-        # a completion, including visible output tokens and reasoning tokens.
-        self.max_completion_tokens = kwargs.get("max_completion_tokens", 100)
-
-        # TODO: Consider enforcing a relation between the level of reasoning
-        # effort requested and max_completion_tokens.
-        # For example, if reasoning_effort == 'none' (either because the LLM 
-        # model does not support reasoning, or because reasoning has been
-        # deliberately turned off), then max_completion_tokens should be 
-        # small, because, after all, at the end of the day we only want a 
-        # one-word, binary response of True or False.
-        # But if reasoning_effort != 'none', then max_completion_tokens
-        # needs to be larger, to allow the reasoning to happen. And the
-        # max_completion_tokens should grow with the level of the
-        # reasoning effort, to allow the reasoning to happen.
-
-        # - - - - - - - - - - - - - - - - - - - -
-        # LLM generated token log probabilities
-        # - - - - - - - - - - - - - - - - - - - - 
-
-        # Whether to return log probabilities of the output tokens or not. 
-        # If true, the log probabilities of each output token in
-        # completion.choices[0].message.content are returned.
-        # Boolean; default is False
         self.logprobs = True
-
-        # An integer between 0 and 20 specifying the number of most likely 
-        # tokens to return at each token position, each with an associated 
-        # log probability.
         self.top_logprobs = 3
 
-        # TODO: Review the use of log probabilities and verify empirically 
-        # that LogMap-LLM is getting value from doing so.
-        # In RAI4Ukraine results.csv files, the
-        # confidence reported there is virtually always 1.0. I can't 
-        # remember seeing a value other than 1.0. That confidence is
-        # derived from the log probability information. Perhaps only some
-        # models return them? Are we extracting top_logprobs info
-        # correctly?  If the resulting LLM confidence is always 1.0, 
-        # is all this stuff with log probabilities not redundant? 
-        # Wouldn't it be simpler and cleaner to remove it and set the
-        # LLM confidence to 1.0 manually?
+        #############################################################################
+        # --------------------------------------------------------------------------#
+        # chat_template_kwargs compatibility (Mistral support)                      #
+        # --------------------------------------------------------------------------#
+        # Does the model's tokenizer supports chat_template_kwargs in extra_body?   #
+        # Mistral models served via vLLM use a proprietary "tekken" tokenizer...    #
+        # this rejects any chat_template / chat_template_kwargs parameters.         #
+        #                                                                           #
+        # Resolution order:                                                         #
+        #   1. Explicit config override (True/False) — takes priority               #
+        #   2. Auto-detection from model_name                                       #
+        #   3. Otherwise default to True                                            #
+        # --------------------------------------------------------------------------#
+        #############################################################################
 
-        # - - - - - - - - - - - - - - - - - - - - - - - - - -
-        # further LLM interaction configuration flexibility
-        # - - - - - - - - - - - - - - - - - - - - - - - - - -
+        explicit = supports_chat_template_kwargs
 
-        # TODO: At some point, review the LLM interaction configuration
-        # flexibility and decide if we need greater flexibility such
-        # as via the following mechanism which sets `self.key = value`
-        # for whatever is in kwargs. Caution: this much flexibility
-        # could also be dangerous and invite mis-configuration.
-
-        # set self.key = value
-        #for key, value in kwargs.items():
-        #    setattr(self, key, value)
-
-        self.enable_thinking = kwargs.get("enable_thinking", None)
-
-        # - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-        # chat_template_kwargs compatibility (Mistral support)
-        # - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
-        
-        # TODO: review better ways to support compatibility across
-        # different model famalies in an extendable manner
-
-        # Whether the model's tokenizer supports chat_template_kwargs
-        # in extra_body. Mistral models served via vLLM use a
-        # proprietary "tekken" tokenizer that rejects any
-        # chat_template / chat_template_kwargs parameters.
-        
-        # Resolution order:
-        #   1. Explicit config override (True/False) — takes priority
-        #   2. Auto-detection from model_name
-        #   3. Otherwise default to True
-
-        explicit = kwargs.get("supports_chat_template_kwargs", None)
         if explicit is not None:
             self.supports_chat_template_kwargs = explicit
         else:
@@ -312,47 +111,62 @@ class OracleConsultationManager_OpenAI:
                 not self._is_mistral_family(self.model_name)
             )
 
+        # TODO: maintain an official 'supported models' list
+
 
     @staticmethod
     def _is_mistral_family(model_name: str) -> bool:
-        """checks whether a model name belongs to the Mistral family"""
+        """Check whether a model name belongs to the Mistral family."""
         return "mistral" in model_name.lower()
+
+
+    @staticmethod
+    def _resolve_interaction_style(requested: str, base_url: str | None) -> InteractionStyle:
+        """
+        Translates the configured interaction_style into a concrete enum value (see constants.py).
+        """
+        if requested == 'auto':
+            if 'openrouter.ai' in (base_url or ''):
+                return InteractionStyle.OPEN_ROUTER
+            # else (not openrouter):
+            return InteractionStyle.LOCAL_VLLM
+        # else (not auto):
+        try:
+            return InteractionStyle(requested)
+        except ValueError:
+            raise ValueError(f"Unknown interaction_style '{requested}'.")
 
 
     def _resolve_system_role(self) -> str:
         """
-        returns the appropriate role name for system-level instructions
-        i.e., OpenAI/OpenRouter accept 'developer'; vLLM expects 'system'
+        Return the appropriate role name for system-level instructions.
+        OpenAI/OpenRouter accept 'developer'; vLLM expects 'system'.
         """
-        if self.interaction_style_name == 'vllm':
+        # add the neccesary configuration options here when required (hence: `in`)
+        if self.interaction_style in (InteractionStyle.LOCAL_VLLM, InteractionStyle.LOCAL_SG_LANG):
             return 'system'
         return 'developer'
 
-    # ------------------
-    # Message management
-    # ------------------
+    # -------------------
+    # Message management:
+    # -------------------
 
     def freeze_messages(self) -> None:
         """
-        Freeze messages (make messages immutable):
+        Freeze messages — no further modifications allowed.
+
         Call before entering multithreaded consultation to ensure the
-        shared message list is not mutated during concurrent reads
+        shared message list is not mutated during concurrent reads.
         """
         self._frozen = True
         self._frozen_messages = tuple(self.messages)
 
 
     def add_developer_message(self, message: str) -> None:
-        '''
-        Add a developer message (an instructions message) to the list of API messages.
-
-        Place the developer message at the front of the list. If one already exists,
-        overwrite it.
-        '''
+        """Add or replace the developer (system) message."""
         if self._frozen:
-            raise RuntimeError("Cannot modify messages after freeze_messages()." 
-                               "Manager is locked for multithreaded consultation.")
-
+            raise RuntimeError("Cannot modify messages after freeze_messages().")
+        
         role = self._resolve_system_role()
         system_roles = {"developer", "system"}
 
@@ -363,20 +177,17 @@ class OracleConsultationManager_OpenAI:
 
 
     def add_message(self, role: str, message: str) -> None:
-        '''
-        Add a message to the list of API messages
-        '''
+        """Add a message to the conversation history."""
         if self._frozen:
-            raise RuntimeError("Cannot modify messages after freeze_messages()." 
-                               "Manager is locked for multithreaded consultation.")
+            raise RuntimeError("Cannot modify messages after freeze_messages().")
         self.messages.append(self.build_api_message(role, message))
 
 
     def add_few_shot_examples(self, examples: list) -> None:
         """
-        adds few-shot example pairs as user/assistant message turns:
-        Call after add_developer_message() and before freeze_messages()
-        Each example is a (user_prompt, assistant_response) tuple
+        Add few-shot example pairs as user/assistant message turns.
+        Call after add_developer_message() and before freeze_messages().
+        Each example is a (user_prompt, assistant_response) tuple.
         """
         for user_prompt, assistant_response in examples:
             self.add_message("user", user_prompt)
@@ -384,18 +195,15 @@ class OracleConsultationManager_OpenAI:
 
 
     def set_response_format(self, response_format: BaseModel | dict) -> None:
-        """Set the response format for the server."""
         self.response_format = response_format
 
 
     def build_api_message(self, role: str, message: str) -> dict:
-        """Build an API message."""
         return {"role": role, "content": message}
-    
 
-    def set_interaction_style(self, interaction_style_name) -> None:
-        """Set the style to be used for interacting with the LLM Oracle."""
-        self.interaction_style_name = interaction_style_name
+
+    def set_interaction_style(self, interaction_style) -> None:
+        self.interaction_style = interaction_style
 
 
     def clear_messages(self) -> None:
@@ -404,99 +212,44 @@ class OracleConsultationManager_OpenAI:
         self._frozen_messages = ()
         self.messages = []
 
-
-    ####
+    # --------------------
     # Oracle consultation
-    ####
-
+    # --------------------
 
     def consult_oracle(self, message, developer_override=None):
-        '''
-        Consult an Oracle using a particular style or approach.
-        
-        This function simply delegates a consultation request to the
-        appropriate approach-specific consultation function. This level
-        of indirection permits LogMap-LLM to explore and support multiple
-        different interaction approaches (or styles), as LLM APIs evolve
-        and mature over time.
+        """Consult the LLM Oracle, dispatching to the appropriate method."""
 
-        For example, Open AI has a Chat Completions API and a Responses API.
-        And there are multiple ways of using each of the two. The former API
-        is stateless; the latter is stateful.
+        if self.response_format is RESPONSE_FORMAT_FOR_UNSTRUCTURED_RESPONSE:
+            if VERBOSE and VERY_VERBOSE:
+                debug("(consult_oracle) Consulting via plain.")
+            return self._consult_via_plain(message, developer_override)
 
-        OpenAI is pushing the Responses API hard, but OpenRouter's support
-        for it is currently limited and in Beta status. Crucially, 
-        OpenRouter's support for the Responses API is currently 'stateless',
-        which means the main feature of the Responses API is unavailable.
-
-        Also, OpenRouter has its own API SDK, but it is in Beta status 
-        and subject to breaking changes. One day, when it has matured,
-        there may be reason to support it as well.
-
-        Parameters
-        ----------
-        message : str
-            A user prompt (aka user message).
-
-        Returns
-        -------
-        LLMCallOutput : Wrapper for the response message, usage, logprobs, and parsed output.
-        '''
-
-        # Auto-detection (thread-safe with double-check)
-        # NOTE: breaking bug, see attached (tour) comment 
-        # specifically: auto will resolve to `_consult_via_parse` which does run with vLLM, 
-        # but produces **semantically different results** when performing consultation \w local models
-        # via vLLM and SGLang, so this needs investigation (TODO NOTE)
-        if self.interaction_style_name == 'auto':
-            with self._style_lock:
-                if self.interaction_style_name == 'auto':
-                    try:
-                        result = self._consult_via_parse(message, developer_override)
-                        self.interaction_style_name = 'openrouter'
-                        return result
-                    except Exception:
-                        result = self._consult_via_create(message, developer_override)
-                        self.interaction_style_name = 'vllm'
-                        return result
-
-        # TODO:
-        # # ALTERNATIVE IMPLEMENTATION:
-        # if self.interaction_style_name == 'auto':
-        #     if 'openrouter.ai' in (self.base_url or ''):
-        #         self.interaction_style_name = 'openrouter'
-        #     else:
-        #         self.interaction_style_name = 'vllm'
-
-        # CALL-BASED LOGIC LIVES HERE
-        # !! STILL TODO: INVESTIGATION !!
-
-        open_router_aliases = (
-            'openrouter',
-            'openai_chat_completions_parse_structured_output',
-        )
-
-        if self.interaction_style_name in open_router_aliases:
+        elif self.interaction_style in (InteractionStyle.OPEN_ROUTER, InteractionStyle.OPEN_AI_CHAT_COMPLETIONS_PARSE):
+            if VERBOSE and VERY_VERBOSE:
+                debug("(consult_oracle) Consulting via parse.")
             return self._consult_via_parse(message, developer_override)
-        elif self.interaction_style_name == 'vllm':
+        
+        elif self.interaction_style in (InteractionStyle.LOCAL_VLLM, InteractionStyle.LOCAL_SG_LANG):
+            if VERBOSE and VERY_VERBOSE:
+                debug("(consult_oracle) Consulting via create.")
             return self._consult_via_create(message, developer_override)
+
         else:
-            raise ValueError(f"Interaction style not recognised: {self.interaction_style_name}")
+            raise ValueError(f"Interaction style not recognised: {self.interaction_style}")
 
 
     def _build_base_kwargs(self, prompt, developer_override=None):
-        """
-        Build the common kwargs dict for LLM interaction
-        """
-        msgs = list(self._frozen_messages if self._frozen else self.messages)
         
+        msgs = list(self._frozen_messages if self._frozen else self.messages)
+
+        # Per-call developer prompt substitution (entity-type-aware)
         if developer_override is not None and msgs:
             system_roles = {"developer", "system"}
             if msgs[0]["role"] in system_roles:
                 msgs[0] = self.build_api_message(msgs[0]["role"], developer_override)
-        
+
         messages = [*msgs, self.build_api_message("user", prompt)]
-        
+
         kwargs = {
             "model": self.model_name,
             "messages": messages,
@@ -505,11 +258,10 @@ class OracleConsultationManager_OpenAI:
             "logprobs": self.logprobs,
             "top_logprobs": self.top_logprobs,
         }
-        
-        # For models with built-in thinking/CoT (e.g. Qwen3),
-        # pass enable_thinking via extra_body.
-        # Skipped when supports_chat_template_kwargs is False.
+
+        # For models with built-in thinking/CoT (e.g. Qwen3, etc), enable_thinking requires extra_body:
         if self.enable_thinking is not None and self.supports_chat_template_kwargs:
+            # (skipped when supports_chat_template_kwargs is False)
             kwargs["extra_body"] = {
                 "chat_template_kwargs": {
                     "enable_thinking": self.enable_thinking
@@ -520,11 +272,8 @@ class OracleConsultationManager_OpenAI:
 
 
     def _extract_response(self, response, parsed_output):
-        """
-        Extract common fields from an API response into LLMCallOutput
-        """
-        output_message = response.choices[0].message.content
-
+        """Extract common fields from an API response into LLMCallOutput."""
+        output_message = response.choices[0].message.content        
         usage = TokensUsage(
             input_tokens=response.usage.prompt_tokens,
             output_tokens=response.usage.completion_tokens,
@@ -540,6 +289,50 @@ class OracleConsultationManager_OpenAI:
             logprobs=logprobs,
             parsed=parsed_output,
         )
+
+
+    @staticmethod
+    def _parse_plain_text_answer(raw_content: str) -> BinaryOutputFormat:
+        """
+        Parse a plain-text LLM response into a BinaryOutputFormat.
+        Permissive parsing: lowercases, strips common punctuation/quoting,
+        and matches against POSITIVE_TOKENS / NEGATIVE_TOKENS. Used both
+        as the primary parser in plain mode and as a fallback inside
+        _consult_via_create when guided JSON decoding fails.
+        Raises ValueError if the response cannot be classified.
+        """
+        if raw_content is None:
+            raise ValueError("LLM returned empty response")
+        cleaned = raw_content.strip().strip(' .!?"\'\n\t').lower()
+        tokens = set(cleaned.split())
+        pos_match = bool(tokens & set(POSITIVE_TOKENS))
+        neg_match = bool(tokens & set(NEGATIVE_TOKENS))
+        if pos_match and not neg_match:
+            return BinaryOutputFormat(answer=True)
+        if neg_match and not pos_match:
+            return BinaryOutputFormat(answer=False)
+        if pos_match and neg_match:
+            raise ValueError(f"Ambiguous LLM response (both pos and neg tokens): {raw_content[:200]!r}")        
+        raise ValueError(f"Could not parse LLM response: {raw_content[:200]!r}")
+
+
+    def _consult_via_plain(self, prompt, developer_override=None):
+        """
+        Consult via create() WITHOUT response_format constraint.
+        The model produces free-form text and we parse it ourselves
+        against POSITIVE_TOKENS / NEGATIVE_TOKENS. Works identically
+        against any OpenAI-compatible endpoint (OpenRouter, vLLM, SGLang)
+        because no provider-specific schema mechanism is involved.
+        """
+        kwargs = self._build_base_kwargs(prompt, developer_override)
+        kwargs["max_tokens"] = self.max_completion_tokens        
+        # deliberately do NOT set response_format
+        # this is the whole point of plain mode
+        response = self.client.chat.completions.create(**kwargs)
+        raw_content = response.choices[0].message.content
+        parsed_output = self._parse_plain_text_answer(raw_content)
+        
+        return self._extract_response(response, parsed_output)
 
 
     def _consult_via_parse(self, prompt, developer_override=None):
@@ -561,7 +354,7 @@ class OracleConsultationManager_OpenAI:
 
     def _consult_via_create(self, prompt, developer_override=None):
         """
-        Consult via create() with JSON schema guided decoding (vLLM/SGLang/etc)
+        Consult via create() with JSON schema guided decoding (vLLM, SGLang)
         """
         kwargs = self._build_base_kwargs(prompt, developer_override)
         kwargs["max_tokens"] = self.max_completion_tokens
@@ -580,38 +373,14 @@ class OracleConsultationManager_OpenAI:
             kwargs["response_format"] = self.response_format
 
         response = self.client.chat.completions.create(**kwargs)
-
         raw_content = response.choices[0].message.content
+
         try:
             parsed_dict = json.loads(raw_content)
             parsed_output = self.response_format(**parsed_dict)
-        except (json.JSONDecodeError, Exception):
-            lower = raw_content.strip().lower()
-            if any(tok in lower for tok in POSITIVE_TOKENS):
-                parsed_output = BinaryOutputFormat(answer=True)
-            elif any(tok in lower for tok in NEGATIVE_TOKENS):
-                parsed_output = BinaryOutputFormat(answer=False)
-            else:
-                raise ValueError(
-                    f"Could not parse LLM response as positive/negative: {raw_content[:200]}"
-                )
+        except (json.JSONDecodeError, ValidationError) as exc:
+            warning(f"_consult_via_create JSON-schema parse failed ({type(exc).__name__}: {exc}); "
+                    f"falling back to _parse_plain_text_answer.")
+            parsed_output = self._parse_plain_text_answer(raw_content)
 
         return self._extract_response(response, parsed_output)
-
-
-    # for backwards compatability:
-
-    def consult_oracle_openai_chat_completions_parse_structured_output(self, prompt):
-        return self._consult_via_parse(prompt)
-
-
-    def consult_oracle_openai_chat_completions_create_output(self, prompt):
-        return self._consult_via_create(prompt)
-
-
-    def legacy_clear_messages(self) -> None:
-        '''
-        Clear all messages (developer and user)
-        '''
-        self.messages = []
-

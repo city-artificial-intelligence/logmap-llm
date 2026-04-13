@@ -15,35 +15,24 @@ import time
 from datetime import datetime, timezone
 from argparse import Namespace
 
-from logmap_llm.log_utils import (
-    TeeWriter,
-    info,
-    step,
-    success,
-)
-from logmap_llm.config.loader import (
-    load_and_validate_config,
-    print_config_summary,
-)
-from logmap_llm.pipeline.logmap_interface import (
-    start_jvm,
-    LogMapInterface,
-)
-from logmap_llm.pipeline.steps import (
+from logmap_llm.utils.logging import TeeWriter, info, step, success, critical
+from logmap_llm.config.loader import load_and_validate_config, print_config_summary
+from logmap_llm.interface import start_jvm, LogMapInterface
+from logmap_llm.pipeline.paths import PipelinePaths
+from logmap_llm.pipeline.context import PipelineContext
+from logmap_llm.pipeline.orchestration import (
     align,
     prompt_build,
     consult_oracle,
     refine_alignment,
     evaluate,
 )
+from logmap_llm.pipeline.contracts import TimingRecord
 from logmap_llm.pipeline.reporting import (
     print_timing_summary,
     print_experimental_parameters,
     write_results_file,
 )
-from logmap_llm.pipeline.context import PipelineContext
-from logmap_llm.pipeline.paths import PipelinePaths
-from logmap_llm.pipeline.types import TimingRecord
 
 
 def main(args: Namespace | None = None) -> int:

@@ -1,5 +1,7 @@
 """
-logmap_llm.config.loader
+logmap_llm.config.loader — Config loading, validation, and display utilities.
+
+Loads TOML config, applies CLI overrides, validates via Pydantic schema.
 """
 from __future__ import annotations
 
@@ -8,7 +10,7 @@ import os
 import tomllib
 from typing import Any
 
-from logmap_llm.log_utils import error, info, success
+from logmap_llm.utils.logging import error, info, success
 from logmap_llm.config.schema import validate_config, LogMapLLMConfig
 from pydantic import ValidationError
 
@@ -18,7 +20,7 @@ def load_and_validate_config(
     reuse_align: bool = False,
     reuse_prompts: bool = False,
 ) -> LogMapLLMConfig:
-    
+    """Load a TOML config file, apply CLI overrides, and validate"""
     if not os.path.isfile(config_path):
         error(f"configuration file not found: {config_path}")
         sys.exit(1)
@@ -49,7 +51,9 @@ def load_and_validate_config(
 
 
 def inspect_and_mask_api_key(key: str) -> str:
-    """Mask API key if printing to console, etc."""
+    """Mask an API key for display, showing only first and last 4 chars"""
+    if key is None: # guards agaisnt None
+        return "<unset>"
     if key == 'EMPTY':
         return key
     return f"{key[:4]} ... {key[-4:]}" if len(key) > 8 else "***"
@@ -58,9 +62,11 @@ def inspect_and_mask_api_key(key: str) -> str:
 def parse_config_into_list(
     config_dict: dict, key_prefix: str = ""
 ) -> list[tuple[str, Any]]:
-    """Recursively flatten a nested config dict into (dotted-key, value) pairs"""
+    """Recursively flatten a nested config dict into (dotted-key, value) pairs."""
     if not isinstance(config_dict, dict):
         return [(key_prefix, config_dict)]
+    if not config_dict and key_prefix:
+        return [(key_prefix, {})] # antisipate empty dicts
     kv_config_pairs = []
     for key, value in config_dict.items():
         extended_key = f"{key_prefix}.{key}" if key_prefix else key
@@ -69,11 +75,13 @@ def parse_config_into_list(
 
 
 def print_config_summary(cfg: LogMapLLMConfig) -> None:
-    """Print a human-readable summary of the configuration"""
+    """Print a human-readable summary of the configuration."""
     flat_config_params: list = parse_config_into_list(cfg.model_dump())
-    expr_params_str: str = "\n\nSummary of Experiment Parameters:\n\n"
+    expr_params_str: str = "Summary of Experiment Parameters:\n\n"
     for key, value in flat_config_params:
-        if key == "oracle.openrouter_apikey":
+        if key == "oracle.api_key":
             value = inspect_and_mask_api_key(value)
+        elif value is None:
+            value = "<unset>"
         expr_params_str += f"{key}: {value}\n"
     info(expr_params_str)

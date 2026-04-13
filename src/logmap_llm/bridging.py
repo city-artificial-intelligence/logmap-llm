@@ -3,25 +3,24 @@ This module contains functionality that supports bridging
 between the worlds of Python and Java.
 '''
 
-# Python imports
+# PYTHON IMPORTS:
 
+import math
 import pandas as pd
 
 from logmap_llm.constants import (
     EntityType,
     EntityRelation,
-    COL_SOURCE_ENTITY_URI,
-    COL_TARGET_ENTITY_URI,
-    COL_RELATION,
-    COL_CONFIDENCE,
-    COL_ENTITY_TYPE,
-    M_ASK_COLUMNS,
     PAIRS_SEPARATOR,
+    VERBOSE,
 )
+
+from logmap_llm.utils.data import filter_accepted_predictions
+from logmap_llm.utils.logging import debug, warning
 
 from pathlib import Path
 
-# Java imports
+# JAVA IMPORTS:
 
 # These import statements presume that JPype has been imported
 # and used to start a JVM (Java Virtual Machine) that has
@@ -29,20 +28,11 @@ from pathlib import Path
 # pre-conditions are satisfied, these import statements (that
 # refer to Java packages and Java classes) will succeed even
 # though PyLance cannot resolve them.
-from uk.ac.ox.krr.logmap2.mappings.objects import MappingObjectStr
-from java.util import HashSet
 
+from uk.ac.ox.krr.logmap2.mappings.objects import MappingObjectStr      # type:ignore
+from java.util import HashSet                                           # type:ignore
 
-# Column names (NOTE: are now imported from constants.py)
-
-# column_source_entity_uri = 'source_entity_uri'
-# column_target_entity_uri = 'target_entity_uri'
-# column_relation = 'relation'
-# column_confidence = 'confidence'
-# column_entityType = 'entityType'
-
-
-# Entity type representations
+# ENTITY TYPE REPRESENTATIONS:
 
 # LogMap recognises 5 entity types in its <MappingObjectStr> objects,
 # each one represented by a particular integer. The LogMap m_ask 
@@ -51,18 +41,26 @@ from java.util import HashSet
 # representations and uses these alone, internally (in memory) and
 # externally in LogMap-LLM output files.
 
-# map for int 2 str
-entityType_int_2_str = {0: EntityType.CLASS.value,       
-                        1: EntityType.DATAPROPERTY.value,
-                        2: EntityType.OBJECTPROPERTY.value,
-                        3: EntityType.INSTANCE.value,
-                        4: EntityType.UNKNOWN.value}
+# entityType_int_2_str := {0: 'CLS', 1: 'DPROP', 2: 'OPROP', 3: 'INST', 4: 'UNKNO'}
+# entityType_str_2_int := {'CLS': 0, 'DPROP': 1, 'OPROP': 2, 'INST': 3, 'UNKNO': 4}
 
-# map for str 2 int
-entityType_str_2_int = {et_str: et_int for et_int, et_str in entityType_int_2_str.items()}
+entityType_int_2_str = {
+    0: EntityType.CLASS.value,
+    1: EntityType.DATAPROPERTY.value,
+    2: EntityType.OBJECTPROPERTY.value,
+    3: EntityType.INSTANCE.value,
+    4: EntityType.UNKNOWN.value,
+}
 
+entityType_str_2_int = {
+    EntityType.CLASS.value: 0,
+    EntityType.DATAPROPERTY.value: 1,
+    EntityType.OBJECTPROPERTY.value: 2,
+    EntityType.INSTANCE.value: 3,
+    EntityType.UNKNOWN.value: 4,
+}
 
-# Relation representations
+# RELATION REPRESENTATIONS:
 
 # LogMap recognises 3 relations in its <MappingObjectStr> objects,
 # each one represented by a particular integer. The LogMap m_ask 
@@ -70,21 +68,60 @@ entityType_str_2_int = {et_str: et_int for et_int, et_str in entityType_int_2_st
 # LogMap-LLM maps the LogMap integer relations to the same string
 # representations and uses these alone, internally (in memory) and
 # externally in LogMap-LLM output files.
-#
+
 #  0 - < - subClassOf    (src_entity subClassOf tgt_entity)  
 # -1 - > - superClassOf  (src_entity superClassOf tgt_entity)
 # -2 - = - equivalence   (src_entity equivalent tgt_entity)
 
-# map for int 2 str
-relation_int_2_str = { 0: EntityRelation.SUBCLASSOF.value,
-                      -1: EntityRelation.SUPERCLASSOF.value,
-                      -2: EntityRelation.EQUIVALENCE.value}
+# relation_int_2_str := {0: '<', -1: '>', -2: '='}
+# relation_str_2_int := {'<': 0, '>': -1, '=': -2}
 
-# map for str 2 int
-relation_str_2_int = {r_str: r_int for r_int, r_str in relation_int_2_str.items()}
+relation_int_2_str = {
+    0: EntityRelation.SUBCLASSOF.value,
+    -1: EntityRelation.SUPERCLASSOF.value,
+    -2: EntityRelation.EQUIVALENCE.value,
+}
 
+relation_str_2_int = {
+    EntityRelation.SUBCLASSOF.value: 0,
+    EntityRelation.SUPERCLASSOF.value: -1,
+    EntityRelation.EQUIVALENCE.value: -2,
+}
 
-# M_ask related fns
+# JAVA -> PYTHON OUTPUT FORMAT FOR M_ASK (MAPPINGS TO ASK):
+
+# When LogMap produces a set of mappings to ask (M_ask), it
+# collects together uncertain mappings that would usually be
+# provided to a human oracle to obtain answers regarding the
+# plausibility/correctness of each uncertain mapping. By dumping
+# these mappings in a file, we can collect them and foward them
+# to an LLM or any other valid oracle. The file that LogMap
+# produces containing the uncertain mappings is structured
+# according to the following header (in a .txt file):
+
+# source_entity_uri|target_entity_uri|relation|confidence|entityType
+
+# Example M_ASK file: https://ontozoo.io/public_dir/examples/example_m_ask.txt
+
+# As such, we define the 'columns' for re-use later below.
+
+COL_SOURCE_ENTITY_URI = 'source_entity_uri'
+COL_TARGET_ENTITY_URI = 'target_entity_uri'
+COL_RELATION = 'relation'
+COL_CONFIDENCE = 'confidence'
+COL_ENTITY_TYPE = 'entityType'
+
+# Note M_ASK_COLUMNS is an immutable tuple:
+
+M_ASK_COLUMNS = (
+    COL_SOURCE_ENTITY_URI,
+    COL_TARGET_ENTITY_URI,
+    COL_RELATION,
+    COL_CONFIDENCE,
+    COL_ENTITY_TYPE,
+)
+
+# to obtain a mutable list, use the following fn:
 
 def get_m_ask_column_names() -> list[str]:
     """
@@ -96,13 +133,61 @@ def get_m_ask_column_names() -> list[str]:
 def load_m_ask_from_file(filepath: Path) -> pd.DataFrame:
     """
     Load a (headerless, pipe-delimited) LogMap m_ask file as a pd.DataFrame
-    Then sets the column names to those defined by constants.py
+    and set the column names to those defined above (M_ASK_COLUMNS).
     """
     m_ask_df = pd.read_csv(filepath, sep=PAIRS_SEPARATOR, header=None)
     m_ask_df.columns = get_m_ask_column_names()
     return m_ask_df
 
-# END: M_ask related fns
+
+###
+# FUNCTIONS TO ENABLE ROUNDTRIPPING BETWEEN LOGMAP (JAVA) AND LOGMAP-LLM (PYTHON)
+# (mostly retained from original LogMap-LLM codebase)
+###
+
+###
+# CONFIDENCE COERCION AT THE JAVA BOUNDARY
+# ---------------------------------------- 
+# when the oracle accepts a mapping but no usable logprob token was emitted,
+# calculate_logprobs_confidence returns float('nan'); passing NaN to LogMap
+# for a confidence value via MappingObjectStr(..., double conf, ...) is technically
+# type-correct, but may notbe semantically coherant; and could possibly cause some
+# kind of failure mode within LogMap; to protect agaisnt this, we coerce NaN to a 
+# concrete default (ie. 1.0; confident 'True' -- or "yes, this mapping is correct")
+# which I'm quite sure is the 'expected behaviour' (the oracle is assumed to produce
+# a binary answer, either yes or no) ... and this only fires for oracle predictions
+# that predict the mapping to be true; so, this should be fine.
+###
+
+# TODO: check about this ^
+
+DEFAULT_CONFIDENCE_FALLBACK = 1.0
+
+
+def _coerce_confidence_for_java(raw_conf, row_index: int | None = None) -> float:
+    """
+    normalises a python confidence value -> finite float for 'double conf':
+    Handles NaN | None | any non-float value (should only be triggered when mapping=True)
+    """
+    if raw_conf is None:
+        if VERBOSE:
+            debug(f"(_coerce_confidence_for_java) None confidence at row {row_index}; hits fallback.")
+        return DEFAULT_CONFIDENCE_FALLBACK
+
+    try:
+        conf = float(raw_conf)
+    except (TypeError, ValueError):
+        if VERBOSE:
+            warning(f"(_coerce_confidence_for_java) non-numeric confidenceat row {row_index}; using fallback")
+        return DEFAULT_CONFIDENCE_FALLBACK
+    
+    if math.isnan(conf) or math.isinf(conf):
+        if VERBOSE:
+            debug(f"(_coerce_confidence_for_java) NaN/inf confidence at row {row_index}; using fallback.")
+        return DEFAULT_CONFIDENCE_FALLBACK
+    
+    return conf
+
 
 
 
@@ -126,11 +211,11 @@ def java_mappings_2_python(m_ask_java) -> pd.DataFrame:
     m_ask_java = m_ask_java.toArray()
 
     # initialise containers for mapping elements
-    src_entity_uris = []
-    tgt_entity_uris = []
-    relations = []
-    confidences = []
-    entity_types = []
+    src_entity_uris: list[str] = []
+    tgt_entity_uris: list[str] = []
+    relations: list[str] = []
+    confidences: list[float] = []
+    entity_types: list[str] = []
 
     # iterate over the mappings in their Java representation
     for mapping_java in m_ask_java:
@@ -141,23 +226,27 @@ def java_mappings_2_python(m_ask_java) -> pd.DataFrame:
 
         # convert LogMap's integer representation of the entity 
         # relation to a string representation
+
         relation_int = mapping_java.getMappingDirection()
-        if relation_int in relation_int_2_str:
-            relations.append(relation_int_2_str[relation_int])
-        else:
+
+        if relation_int not in relation_int_2_str:
             raise ValueError(f'Relation {relation_int} not recognised')
+        
+        relations.append(relation_int_2_str[relation_int])
 
         # get LogMap's confidence in the mapping
-        confidences.append(mapping_java.getConfidence())
+        confidences.append(float(mapping_java.getConfidence()))
 
         # convert LogMap's integer representation of the entity type
         # to a string representation
         entityType_int = mapping_java.getTypeOfMapping()
-        if entityType_int in entityType_int_2_str:
-            entity_types.append( entityType_int_2_str[entityType_int])
-        else:
+        if entityType_int not in entityType_int_2_str:
             raise ValueError(f'Entity type {entityType_int} not recognised')
-    
+            
+        entity_types.append( entityType_int_2_str[entityType_int])
+
+    # end: for
+
     # assemble the columns of mapping elements into a DataFrame
     return pd.DataFrame(data={
         COL_SOURCE_ENTITY_URI: src_entity_uris,
@@ -192,40 +281,34 @@ def python_oracle_mapping_predictions_2_java(m_ask_df_ext):
         The subset of the mappings in m_ask that an LLM Oracle predicted
         to be True mappings.
     '''
+    # skip over (i.e. filter-out) everything except mappings with an Oracle prediction 
+    # of True; this excludes mappings with Oracle prediction values of False and 'error'
+    accepted = filter_accepted_predictions(m_ask_df_ext)
 
     # container for a collection of LogMap <MappingObjectStr> Java objects
-    m_ask_oracle_preds_true = []
+    m_ask_oracle_preds_true: list = []
 
     # iterate over the DataFrame rows (Oracle mapping predictions) and
     # create a Python list of LogMap <MappingObjectStr> Java objects
-    for row in m_ask_df_ext.itertuples():
-
-        # skip over (i.e. filter-out) everything except mappings
-        # with an Oracle prediction of True; this excludes mappings
-        # with Oracle prediction values of False and 'error'
-        if not row.Oracle_prediction == True:
-            continue
+    for row in accepted.itertuples():
 
         iri1 = row.source_entity_uri
         iri2 = row.target_entity_uri
-        conf = row.Oracle_confidence
+        conf = _coerce_confidence_for_java(row.Oracle_confidence, row_index=row.Index)
 
-        # for the relation, get the integer representation
-        # recognised by LogMap
-        if row.relation in relation_str_2_int:
-            relation_int = relation_str_2_int[row.relation]
-        else:
+        # for the relation, get the integer representation recognised by LogMap
+        if row.relation not in relation_str_2_int:
             raise ValueError(f'Entity relation {row.relation} not recognised')
         
-        # for the entityType, get the integer representation
-        # recognised by LogMap
-        if row.entityType in entityType_str_2_int:
-            entityType_int = entityType_str_2_int[row.entityType]
-        else:
+        relation_int = relation_str_2_int[row.relation]
+        
+        # for the entityType, get the integer representation recognised by LogMap
+        if row.entityType not in entityType_str_2_int:
             raise ValueError(f'Entity type {row.entityType} not recognised')
+        
+        entityType_int = entityType_str_2_int[row.entityType]
 
         mos = MappingObjectStr(iri1, iri2, conf, relation_int, entityType_int)
-
         m_ask_oracle_preds_true.append(mos)
     
     # convert the Python list of <MappingObjectStr> Java objects to a
