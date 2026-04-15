@@ -1,6 +1,7 @@
 """
 logmap_llm.oracle.prompts.formatting
 Prompt formatting utilities (originally prompt_utils.py)
+NOTE: mostly imported from prior code
 """
 from __future__ import annotations
 

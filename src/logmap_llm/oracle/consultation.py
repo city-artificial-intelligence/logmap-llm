@@ -1,8 +1,7 @@
 '''
 logmap_llm.oracle.consultation
-
-Provides oracle consultation orchestration via OracleConsultationManager.
-Manages the process of consulting an LLM Oracle for all candidate mappings in M_ask.
+This module contains functionality that supports consulting 
+(interacting with) LLM Oracles.
 '''
 from __future__ import annotations
 
@@ -96,12 +95,10 @@ def get_llm_mapping_prediction(response):
 def calculate_logprobs_confidence(log_probs: list) -> float:
     """
     Extract confidence from logprobs for a binary true/false prediction.
-
     Searches token logprobs for the true/false decision token, handling
     both bare tokens ("true", "false") and tokens with leading whitespace
-    (" true", " false") as produced by structured JSON output.
-
-    Returns the maximum probability between the true and false options,
+    (" true", " false") as (possibly) produced by structured JSON output;
+    will return the maximum probability between the true and false options,
     representing the model's confidence in whichever prediction it made.
     Returns NaN if logprobs are unavailable or contain no true/false token.
     """

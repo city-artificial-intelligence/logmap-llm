@@ -192,8 +192,7 @@ def main():
     info(f"Pipeline log file: {log_filepath}")
     info('Reusing existing initial LogMap alignment ...')
 
-    # NOTE: we should adopt the paths.py (in pipeline) for managing
-    # the file paths ...
+    # NOTE: we should adopt the paths.py (in pipeline) for managing the file paths ...
     filename = task_name + '-logmap_mappings.txt'
     filepath = os.path.join(logmap_outputs_dir_path, filename)
     mappings = pd.read_csv(filepath, sep=PAIRS_SEPARATOR, header=None)

@@ -1,25 +1,3 @@
-#
-# This module is for defining alternative 'developer' prompts
-# to be used in Oracle (LLM) consultations. 
-# 
-# A 'developer' prompt (or message) conveys instructions to 
-# an LLM to set the context for how the LLM should process 
-# the one (or more) accompanying 'user' prompts (messages).
-# 
-# The notions of 'developer' message and 'user' message are
-# part of OpenAI's API SDK, which OpenRouter uses as a kind of
-# defacto standard for interacting with OpenRouter.
-# 
-# Currently the content of 'developer' prompts is completely 
-# fixed, according to what is written here in this module.
-# Support for some sort of templating scheme, to permit
-# 'developer' prompts to be customised at the instance level,
-# is future work.
-#
-# Currently, LogMap-LLM uses one user-designated 'developer'
-# prompt for all of the Oracle consultations (LLM interactions)
-# involved in a given alignment task.
-#
 """
 logmap_llm.oracle.prompts.developer — Developer (system) prompt registry.
 

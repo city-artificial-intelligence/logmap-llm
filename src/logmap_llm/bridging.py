@@ -13,6 +13,7 @@ from logmap_llm.constants import (
     EntityRelation,
     PAIRS_SEPARATOR,
     VERBOSE,
+    DEFAULT_CONFIDENCE_FALLBACK,
 )
 
 from logmap_llm.utils.data import filter_accepted_predictions
@@ -156,13 +157,9 @@ def load_m_ask_from_file(filepath: Path) -> pd.DataFrame:
 # concrete default (ie. 1.0; confident 'True' -- or "yes, this mapping is correct")
 # which I'm quite sure is the 'expected behaviour' (the oracle is assumed to produce
 # a binary answer, either yes or no) ... and this only fires for oracle predictions
-# that predict the mapping to be true; so, this should be fine.
+# that predict the mapping to be true; so, this should be fine. (DEFAULT CONF = 1.0)
+#       (see constants.py)
 ###
-
-# TODO: check about this ^
-
-DEFAULT_CONFIDENCE_FALLBACK = 1.0
-
 
 def _coerce_confidence_for_java(raw_conf, row_index: int | None = None) -> float:
     """
@@ -189,6 +186,16 @@ def _coerce_confidence_for_java(raw_conf, row_index: int | None = None) -> float
     return conf
 
 
+###
+# BRIDGING INTERFACE
+# The implementation is mostly retained from the prior version.
+# A slight stylistic modification has been applied to the guard clauses
+# though, these are still functionally equivalent. The filtering behaviour
+# is actually reused in other areas of the code, so we pull that out as a util.
+# the same can be said about the coersion of NaN values (and how it relates to pd)
+# eg. in erroneous cases (conf=0) or  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+# when a mapping is true, but no confidence is specified (ie. conf=1.0)
+###
 
 
 def java_mappings_2_python(m_ask_java) -> pd.DataFrame:

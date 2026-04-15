@@ -1,6 +1,5 @@
 """
 logmap_llm.pipeline.cli — command-line argument parsing for pipeline
-
 Provides the ArgumentParser for the LogMap-LLM pipeline entry point.
 """
 from __future__ import annotations

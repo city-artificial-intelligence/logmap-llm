@@ -1,8 +1,10 @@
-'''
-NOTE: I suppose this is the OBDA layer, so maybe object.py is more appropraite?
-NOTE: we could just use LogMap for this though... (would require further changes to its src)
-'''
+"""
+logmap_llm.ontology.entities
 
+Ontology entity classes. Provides the OntologyEntity ABC, ClassEntity 
+(renamed from OntologyEntryAttr in prior version), PropertyEntity,
+InstanceEntity, and the resolve_entity() dispatch function
+"""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -10,6 +12,11 @@ import owlready2
 
 from logmap_llm.ontology.access import OntologyAccess
 
+from logmap_llm.constants import VERBOSE
+
+###
+# Exceptions
+###
 
 class ClassNotFoundError(Exception):
     pass
@@ -23,7 +30,12 @@ class InstanceNotFoundError(Exception):
     pass
 
 
+###
+# ABC
+###
+
 class OntologyEntity(ABC):
+    """Common abstract base class for ontology entities"""
 
     @abstractmethod
     def get_preferred_names(self) -> set[str]:
@@ -59,39 +71,34 @@ class OntologyEntity(ABC):
         return self.annotation["uri"]
 
 
+###
+# ClassEntity
+###
 
 class ClassEntity(OntologyEntity):
-    def __init__(
-        self, class_uri: str | None, onto: OntologyAccess, onto_entry: owlready2.ThingClass | None = None
-    ) -> None:
+    """Represents an OWL class entity with its ontological context"""
+
+    def __init__(self, class_uri: str | None, onto: OntologyAccess, onto_entry: owlready2.ThingClass | None = None) -> None:
         assert class_uri is not None or onto_entry is not None
         if class_uri is not None:
             self.thing_class = onto.getClassByURI(class_uri)
         else:
             self.thing_class = onto_entry
-        
+
         if self.thing_class is None:
             raise ClassNotFoundError(f"Class {class_uri} not found in ontology.")
 
-        self.annotation: dict[str : set | owlready2.ThingClass] = {"class": self.thing_class}
+        self.annotation: dict = {"class": self.thing_class}
         self.onto: OntologyAccess = onto
         self.annotate_entry(onto)
 
     def annotate_entry(self, onto: OntologyAccess) -> None:
-        #LOGGER.debug(f"Annotating {self.thing_class}")
         self.annotation["uri"] = self.thing_class.iri
         self.annotation["preferred_names"] = onto.getPreferredLabels(self.thing_class)
         self.annotation["synonyms"] = onto.getSynonymsNames(self.thing_class)
         self.annotation["all_names"] = onto.getAnnotationNames(self.thing_class)
         self.annotation["parents"] = onto.getAncestors(self.thing_class, include_self=False)
         self._children_loaded = False
-        
-        ##
-        # TODO: consider defering this to self._ensure_children_loaded (configurable)
-        # NOTE: at present, we defer this to self._ensure_children_loaded (lazily load)
-        ##
-        #self.annotation["children"] = onto.getDescendants(self.thing_class, include_self=False)
-        #self._children_loaded = True
 
         for key in ["preferred_names", "synonyms", "all_names"]:
             if not self.annotation[key]:
@@ -105,33 +112,9 @@ class ClassEntity(OntologyEntity):
             self._children_loaded = True
 
     def _get_entry_names(self, name_type: str) -> set[str]:
-        """Get the names of the entry.
-
-        Args:
-            name_type (str): The type of name to get, either "preffered", "synonyms", or "all_names".
-            entry (OntologyEntryAttr): The entry to get the names of.
-
-
-        Returns:
-            set[str]: The names of the entry.
-
-        """
         return self.annotation[name_type]
-
-    def _get_entry_names(self, name_type: str) -> set[str]:
-        return self.annotation[name_type]
-
-    def get_all_entity_names(self) -> set[str]:
-        return self.annotation["all_names"]
 
     def get_preferred_names(self) -> set[str]:
-        return self.annotation["preferred_names"]
-
-    # Legacy API (used throughout existing code)
-    # def get_preffered_names(self) -> set[str]:
-    #     return self.annotation["preffered_names"]
-
-    def get_preffered_names(self) -> set[str]:
         return self.annotation["preferred_names"]
 
     def get_all_entity_names(self) -> set[str]:
@@ -139,11 +122,11 @@ class ClassEntity(OntologyEntity):
 
     def get_synonyms(self) -> set[str]:
         return self.annotation["synonyms"]
-    
-    def __wrap_owlready2_objects(self, owlready2_class: owlready2.ThingClass) -> ClassEntity:
+
+    def __wrap_owlready2_objects(self, owlready2_class) -> ClassEntity:
         return ClassEntity(class_uri=None, onto_entry=owlready2_class, onto=self.onto)
 
-    def __owlready_set2_objects_set(self, owlready2_set: set[owlready2.ThingClass]) -> set[ClassEntity]:
+    def __owlready_set2_objects_set(self, owlready2_set) -> set[ClassEntity]:
         return {self.__wrap_owlready2_objects(c) for c in owlready2_set}
 
     def get_children(self) -> set[ClassEntity]:
@@ -153,10 +136,11 @@ class ClassEntity(OntologyEntity):
     def get_parents(self) -> set[ClassEntity]:
         return self.__owlready_set2_objects_set(self.annotation["parents"])
 
-    def __get_relatives_by_levels(self, max_level: int, relatives_func: callable) -> dict[int, set[ClassEntity]]:
-        """Get the relatives of the entry by all levels up to max_level."""
+    def __get_relatives_by_levels(
+        self, max_level: int, relatives_func: callable
+    ) -> dict[int, set[ClassEntity]]:
         current_level = 0
-        current_level_entries: set[owlready2.ThingClass] = {self.thing_class}
+        current_level_entries = {self.thing_class}
         relatives_by_levels = {}
 
         while current_level_entries and current_level <= max_level:
@@ -169,11 +153,11 @@ class ClassEntity(OntologyEntity):
             for entry in current_level_entries:
                 entity_relatives = relatives_func(entry, include_self=False)
                 current_level_relatives.update(entity_relatives)
-
                 for relative in entity_relatives:
-                    current_entries_indirect_relatives.update(relatives_func(relative, include_self=False))
+                    current_entries_indirect_relatives.update(
+                        relatives_func(relative, include_self=False)
+                    )
 
-            # FIX: previously using eval_entities
             current_level_entries = current_level_relatives.difference(
                 current_entries_indirect_relatives
             )
@@ -206,8 +190,13 @@ class ClassEntity(OntologyEntity):
             if isinstance(child, owlready2.ThingClass):
                 direct.add(self.__wrap_owlready2_objects(child))
         return direct
-    
+
     def get_siblings(self, max_count: int = 2) -> list[ClassEntity]:
+        """
+        gets sibling classes (sharing a direct parent - excluding self)
+        siblings are sorted alphabetically by preferred label for 
+        reproducibility and capped at max_count
+        """
         siblings: set[ClassEntity] = set()
         for parent in self.get_direct_parents():
             for child in parent.get_direct_children():
@@ -220,13 +209,8 @@ class ClassEntity(OntologyEntity):
 
         return sorted(siblings, key=_sort_key)[:max_count]
 
-    
-
     def get_restrictions(self, max_count: int = 3) -> list[dict]:
-        """
-        Get OWL restrictions declared on this class.
-        See `logmap_llm.oracle.access.getClassRestrictions`.
-        """
+        """Get OWL restrictions declared on this class."""
         all_restrictions = self.onto.getClassRestrictions(self.thing_class)
         some_first = sorted(
             all_restrictions,
@@ -234,28 +218,16 @@ class ClassEntity(OntologyEntity):
         )
         return some_first[:max_count]
 
-
     def get_relational_signature(self) -> dict:
-        """
-        Get the relational signature of this class.
-        See `logmap_llm.oracle.access.getClassRelationalSignature`.
-        """
+        """Get the relational signature of this class."""
         return self.onto.getClassRelationalSignature(self.thing_class)
 
-
-
-    def get_attribute_relatives_names(self, relatives_name: str, name_type: str) -> list[set[str]]:
-        """Get the names of the parents or children of the entry.
-
-        Args:
-            relatives_name (str): The relative type to get the names of.
-            name_type (str): The type of name to get.
-
-        Returns:
-            list: The names of the parents or children of the entry.
-
-        """
-        attribute_function = self.get_parents if relatives_name == "parents" else self.get_children
+    def get_attribute_relatives_names(
+        self, relatives_name: str, name_type: str
+    ) -> list[set[str]]:
+        attribute_function = (
+            self.get_parents if relatives_name == "parents" else self.get_children
+        )
         return [
             entry_names if (entry_names := entry._get_entry_names(name_type)) else {entry}
             for entry in attribute_function()
@@ -280,30 +252,29 @@ class ClassEntity(OntologyEntity):
         return self.get_attribute_relatives_names("children", "all_names")
 
     def __repr__(self) -> str:
-        """Return a string representation of the object."""
         return str(self.thing_class)
 
     def __str__(self) -> str:
-        """Return a string representation of the object."""
         return str(self.annotation)
 
-    def __eq__(self, other: OntologyEntryAttr) -> bool:
-        """Check if this OntologyEntryAttr is equal to another OntologyEntryAttr."""
-        return self.thing_class == other.thing_class
 
-    def __hash__(self) -> int:
-        """Return the hash value of the object."""
-        return hash(self.thing_class)
-
+###
+# PropertyEntity
+###
 
 class PropertyEntity(OntologyEntity):
+    """
+    Ontological context for a property entity (ObjectProperty or DataProperty).
+    Provides an interface parallel to ClassEntity but with property-appropriate
+    context: domain classes, range classes/datatypes, and characteristics
+    """
 
     def __init__(self, prop_uri: str, onto: OntologyAccess) -> None:
-
         self.prop = onto.getPropertyByURI(prop_uri)
-
         if self.prop is None:
-            raise PropertyNotFoundError(f"Property {prop_uri} not found in ontology.")
+            raise PropertyNotFoundError(
+                f"Property {prop_uri} not found in ontology."
+            )
         self.onto = onto
         self.annotation = {
             "property": self.prop,
@@ -336,6 +307,7 @@ class PropertyEntity(OntologyEntity):
         return self.annotation.get("range_names", set())
 
     def get_domain_synonyms(self) -> set[str]:
+        """Get synonyms for domain classes."""
         result = set()
         try:
             for cls in self.prop.domain:
@@ -346,6 +318,7 @@ class PropertyEntity(OntologyEntity):
         return result
 
     def get_range_synonyms(self) -> set[str]:
+        """Get synonyms for range classes."""
         result = set()
         try:
             for cls in self.prop.range:
@@ -356,6 +329,7 @@ class PropertyEntity(OntologyEntity):
         return result
 
     def get_characteristics(self) -> list[str]:
+        """Return property characteristics (transitive, symmetric, etc.)."""
         chars = []
         try:
             if getattr(self.prop, 'is_transitive', False):
@@ -371,6 +345,7 @@ class PropertyEntity(OntologyEntity):
         return chars
 
     def get_inverse_name(self) -> str | None:
+        """Return the label of the inverse property, or None."""
         inv = getattr(self.prop, 'inverse_property', None)
         if inv is None:
             return None
@@ -392,7 +367,16 @@ class PropertyEntity(OntologyEntity):
         return hash(self.annotation.get("uri", id(self)))
 
 
+###
+# InstanceEntity
+###
+
 class InstanceEntity(OntologyEntity):
+    """
+    Ontological context for an individual entity (KG track).
+    Retrieves structured context from the rdflib graph via
+    OntologyAccess.getInstanceContext()
+    """
 
     def __init__(self, uri: str, onto: OntologyAccess) -> None:
         self.uri = uri
@@ -455,45 +439,38 @@ class InstanceEntity(OntologyEntity):
     def __hash__(self) -> int:
         return hash(self.uri)
 
-
 ###
 # Entity type dispatch
 ###
 
 def resolve_entity(uri: str, onto: OntologyAccess):
-    """
-    Resolve a URI to a ClassEntity, PropertyEntity, or InstanceEntity.
-    Tries class resolution first, then property, then individual.
-    """
-    # class:
+    """Resolve a URI to a ClassEntity, PropertyEntity, or InstanceEntity."""
+    # try cls first
     cls = onto.getClassByURI(uri)
     if cls is not None:
         return ClassEntity(class_uri=None, onto_entry=cls, onto=onto), "class"
-    
-    # property:
+    # then try prop
     if hasattr(onto, 'getPropertyByURI'):
         prop = onto.getPropertyByURI(uri)
         if prop is not None:
             return PropertyEntity(uri, onto), "property"
-    
-    # individual:
+    # then try inst
     if hasattr(onto, 'getIndividualByURI'):
         ind = onto.getIndividualByURI(uri)
         if ind is not None:
             return InstanceEntity(uri, onto), "instance"
-    
-    # fallback:
+    # finally, fallback to rdflib graph (for KG instances not in owlready2 index)
     if hasattr(onto, 'hasSubjectInGraph') and onto.hasSubjectInGraph(uri):
         try:
             return InstanceEntity(uri, onto), "instance"
         except InstanceNotFoundError:
             pass
-
+    # otherwise:
     raise ClassNotFoundError(f"URI {uri} not found as class, property, or individual.")
 
 
-# ensure backwards compatability
+
+# Backward-compatible aliases
 OntologyEntryAttr = ClassEntity
 PropertyEntryAttr = PropertyEntity
 InstanceEntryAttr = InstanceEntity
-
