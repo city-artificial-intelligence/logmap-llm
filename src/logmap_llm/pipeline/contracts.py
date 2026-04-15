@@ -8,7 +8,7 @@ import pandas as pd
 
 @dataclass
 class AlignmentResult:
-    """Result of the alignment step (Step 1)."""
+    """Result of the alignment step."""
     m_ask_df: pd.DataFrame | None = None
     mappings: pd.DataFrame | None = None
 
@@ -23,7 +23,7 @@ class AlignmentResult:
 
 @dataclass
 class PromptBuildResult:
-    """Result of the prompt building step (Step 2)."""
+    """Result of the prompt building step."""
     prompts: dict | None = None
     bidirectional: bool = False
 
@@ -50,57 +50,59 @@ class OracleResult:
 
     @property
     def n_consultations(self) -> int:
-        """Number of individual LLM calls made."""
+        """Number of idv. LLM calls"""
         if self.predictions is None:
             return 0
         n = len(self.predictions)
-        # in bidirectional mode, double the count:
         return n * 2 if self.bidirectional else n
 
-    def prediction_summary(self) -> str | None:
-        """Human-readable summary of oracle predictions."""
+    def prediction_summary(self, return_list=False) -> str | None:
+        """Human-readable summary of oracle predictions"""
         if self.predictions is None:
             return None
-        
-        preds = self.predictions['Oracle_prediction']
 
-        n = len(preds)
-        n_err = int(sum(preds == 'error'))
-        n_true = int(sum(preds == True))
-        n_false = int(sum(preds == False))
-        n_skipped = int(sum(preds == 'skipped'))
-        
-        padding_width = len(str(n))
+        preds: pd.Series = self.predictions['Oracle_prediction']
 
-        output_lines = [f"Mappings to ask an Oracle : {n}"]
-        
+        n_preds   = len(preds)
+        counts    = preds.value_counts()
+        n_true    = int(counts.get(True,      0))
+        n_false   = int(counts.get(False,     0))
+        n_error   = int(counts.get('error',   0))
+        n_skipped = int(counts.get('skipped', 0))
+
+        successful_consults = n_preds - n_error - n_skipped
+        consultation_suffix = "(unidirectional consultations)"
+
         if self.bidirectional:
-            output_lines.append(f"LLM Oracle consultations : {(n - n_err - n_skipped) * 2}"
-                                f"({n - n_err - n_skipped} candidates x 2 directions)")
-        else:
-            output_lines.append(f"LLM Oracle consultations : {n - n_err - n_skipped}")
+            successful_consults *= 2
+            consultation_suffix = f"({successful_consults // 2} x 2)"
 
-        output_lines.extend([
-            f"Predicted True           : {str(n_true).rjust(padding_width)}",
-            f"Predicted False          : {str(n_false).rjust(padding_width)}",
-            f"Consultation failures    : {str(n_err).rjust(padding_width)}",
-        ])
+        padding_width = len(str(max(n_preds, successful_consults)))
+        pad = lambda x: str(x).rjust(padding_width)
+
+        output_lines = [
+            f"Mappings to ask an Oracle  : {pad(n_preds)}",
+            f"Predicted True             : {pad(n_true)}",
+            f"Predicted False            : {pad(n_false)}",
+            f"Consultation failures      : {pad(n_error)}",
+            f"LLM Oracle consultations   : {pad(successful_consults)} {consultation_suffix}",
+        ]
 
         if n_skipped > 0:
-            output_lines.append(f"Skipped (no prompt)      : {str(n_skipped).rjust(padding_width)}")
+            output_lines.append(f"Skipped (no prompt)        : {pad(n_skipped)}")
 
         if self.bidirectional:
             output_lines.append("")
             output_lines.append("Bidirectional details (aggregated via logical AND):")
-            output_lines.append(f"  Equivalence (both True)     : {n_true}")
-            output_lines.append(f"  Not equivalent (>=1 False)  : {n_false}")
+            output_lines.append(f"  Equivalence (both True)    : {pad(n_true)}")
+            output_lines.append(f"  Not equivalent (>=1 False) : {pad(n_false)}")
 
-        return "\n".join(output_lines)
+        return output_lines if return_list else "\n".join(output_lines)
 
 
 @dataclass
 class RefinementResult:
-    """Result of the alignment refinement step (Step 4)."""
+    """Result of the alignment refinement step."""
     refined_mappings: pd.DataFrame | None = None
 
     @property
@@ -114,7 +116,7 @@ class RefinementResult:
 
 @dataclass
 class EvaluationResult:
-    """Result of the evaluation step (Step 5)."""
+    """Result of the evaluation step."""
     metrics: dict = field(default_factory=dict)
     results: dict = field(default_factory=dict)
 

@@ -7,6 +7,9 @@ For Example:
 
 Current output:  is "homeworld" "Tatooine" and is "species" "Human"
 NLF output:      whose homeworld is "Tatooine" and whose species is "Human"
+
+TODO: integrate into pipeline as a configurable usable module; at present
+we just test this manually during KG evaluation.
 '''
 from __future__ import annotations
 

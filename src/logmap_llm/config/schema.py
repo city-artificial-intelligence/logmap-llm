@@ -45,18 +45,16 @@ class PromptTemplateConfig(BaseModel):
     inst_dev_prompt_template_name: Optional[str] = "instance_equivalence"
     inst_usr_prompt_template_name: Optional[str] = None
 
-    # strategy: one of "alphanumeric", "shortest_label", "sapbert", "sbert".
-    # Defaults to "sapbert" for biomedical domains, "sbert" otherwise — see
-    # stage_two._resolve_sibling_strategy for the auto-selection logic.
+    # (strategy) select from 'alphanumeric', 'shortest_label', 'sapbert', 'sbert'
+    # defaults to 'sapbert' when ontology_domain := 'biomedical', 'sbert' otherwise
     sibling_strategy: Optional[str] = None
 
-    # optional override of the embedding model; only used when
-    # sibling_strategy is "sapbert" or "sbert"; when None, the
-    # default checkpoint is used
+    # optional override of the embedding model; only used when sibling_strategy 
+    # is 'sapbert' or 'sbert'; when None, the default checkpoint is used
     sibling_model: Optional[str] = None
 
-    # Cost cap on the candidate sibling set before ranking. None -> use
-    # DEFAULT_MAX_SIBLING_CANDIDATES from constants.py.
+    # the cost cap on the candidate sibling set prior to ranking
+    #  None -> uses DEFAULT_MAX_SIBLING_CANDIDATES from constants.py
     sibling_max_candidates: Optional[int] = None
 
 
@@ -82,7 +80,7 @@ class OracleConfig(BaseModel):
     
     max_workers: Optional[int]            = 24               # Reccomended: start \w number of phsyical cores - 8
     enable_thinking: Optional[bool]       = False            # toggles thinking mode on/off for supported models
-    max_completion_tokens: Optional[int]  = 1000             # when reasoning, CoT may expend >> max_completion_tokens
+    max_completion_tokens: Optional[int]  = 32768 # 1000     # when reasoning, CoT may expend >> max_completion_tokens
     temperature: Optional[float]          = 0.0              # for _as deterministic as possible_ set to 0.0
     top_p: Optional[float]                = 1.0              # sampling (interacts \w temperature)
     reasoning_effort: Optional[str]       = "minimal"        # default minimal (check supported model docs for settings)

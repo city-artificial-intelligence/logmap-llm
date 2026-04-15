@@ -113,7 +113,7 @@ class OntologyAccess:
         """
         urionto : str - URI or file path to the ontology.
         annotate_on_init : bool - if true, load the ontology and index annotations immediately.
-        cache : object, optional - caching interface (Branch 2); if None => no caching.
+        cache : object, optional - caching interface; if None => no caching.
         """
         logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.WARNING)
         self.urionto = str(urionto)
@@ -156,8 +156,6 @@ class OntologyAccess:
             self.onto = self.world.get_ontology(self.urionto)
         else:
             self.onto = self.world.get_ontology(self.urionto).load()
-        
-        owlready2.JAVA_MEMORY = memory_java
 
         # DH: If we set log level here, then the 2nd call we make
         # to this function, to load the 2nd (target) ontology, writes
@@ -169,6 +167,8 @@ class OntologyAccess:
         # but we get the same effect if we simply do NOT set the
         # level here.
         #owlready2.set_log_level(9)
+
+        owlready2.JAVA_MEMORY = memory_java
 
         if reasoner == Reasoner.PELLET:
             try:
@@ -221,7 +221,6 @@ class OntologyAccess:
         print(f"Indexed {len(self._uri_to_property)} properties.")
         print(f"Indexed {len(self._uri_to_individual)} individuals.")
         
-
 
 
     def getOntology(self) -> owlready2.Ontology:

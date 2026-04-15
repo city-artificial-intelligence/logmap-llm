@@ -6,8 +6,6 @@ Ported from jd-extended, see:
     https://github.com/jonathondilworth/logmap-llm/blob/jd-extended/pipeline_steps.py
 
 With some modifications (ready for future branches/features).
-
-TODO: add appropriate comments & documentation
 """
 from __future__ import annotations
 
@@ -54,16 +52,126 @@ from logmap_llm.utils.logging import (
 
 
 
+# PRIVATE HELPERS
+#################
+
+
+
+def _detect_bidirectional(prompts: dict) -> bool:
+    """
+    Detect whether prompts were built in bidirectional mode; bidirectional prompt keys 
+    have a direction suffix, specifically: 'src_uri|tgt_uri|REVERSE', whereas standard
+    keys are just: 'src_uri|tgt_uri'
+    """
+    if not prompts:
+        return False
+    return any(key.count(PAIRS_SEPARATOR) >= 2 for key in prompts)
+
+
+
+def _validate_prompt_keys(prompts: dict, bidirectional: bool, template_name: str = "") -> None:
+    """
+    Validates that the prompt key format matches the consultation mode.
+    """
+    if not prompts:
+        return
+    
+    keys_have_direction = _detect_bidirectional(prompts)
+    
+    if bidirectional and not keys_have_direction:
+        raise ValueError(
+            f"Bidirectional template '{template_name}' selected but prompts   "
+            f"lack direction keys (eg. '...|REVERSE'). The prompt JSON was    "
+            f"likely built with a non-bidirectional template. Rebuild prompts "
+            f"or select a matching template."
+        )
+    if not bidirectional and keys_have_direction:
+        raise ValueError(
+            f"Standard template '{template_name}' selected but prompts have  "
+            f"direction keys (eg. '...|REVERSE'). The prompt JSON was likely "
+            f"built with a bidirectional template. Rebuild prompts or select "
+            f"a matching template."
+        )
+
+
+
+def _kg_refine_in_python(ctx: PipelineContext, oracle_result: OracleResult) -> None:
+    """
+    Produce refined alignment for KG track in Python.
+
+    Computes: refined = { initial - M_ask } U { m \in M_ask : oracle(m) = True }
+
+    Prior to patching, LogMap's Java refinement crashes with NullPointerExceptions for instance matching.
+    Additionally, the alignment stage does take a while (eg. when a KG has > 1m instances); this can be
+    offset through by-passing the initial aligning (with --reuse-align). However, the refinement stage 
+    (similarly) takes a long time; as such, this provides an optional means to quickly calculate an
+    approximation to what the refinement ought to look like, but lacks final conflict resolution.
+    Though, for KGs and instance matching, I am not sure how impactful the conflict resolution is 
+    anyway; since LogMap was not originally designed for this specific use case.
+
+    NOTE: since patching LogMap, the new build appears to work as intended.
+
+    TODO: _kg_refine_in_python should handle both pipe and tab separators, or use the same format detection 
+    logic as evaluate.py (updated note -- 14th April -- can't quite recall what this TODO was for, exactly;
+    revisit later).
+    """
+    from logmap_llm.constants import (
+        COL_SOURCE_ENTITY_URI,
+        COL_TARGET_ENTITY_URI,
+        COL_RELATION,
+        COL_CONFIDENCE,
+        COL_ENTITY_TYPE,
+    )
+
+    # load initial alignment
+    initial_path = ctx.run_paths.logmap_mappings()
+    initial_df = pd.read_csv(initial_path, sep=PAIRS_SEPARATOR, header=None)
+    initial_df.columns = [
+        COL_SOURCE_ENTITY_URI,
+        COL_TARGET_ENTITY_URI,
+        COL_RELATION,
+        COL_CONFIDENCE,
+        COL_ENTITY_TYPE
+    ][:len(initial_df.columns)]
+
+    # build set of m_ask pairs
+    preds = oracle_result.predictions
+    m_ask_pairs = set()
+    
+    for _, row in preds.iterrows():
+        m_ask_pairs.add((str(row.iloc[0]), str(row.iloc[1])))
+
+    # retain rows disjoint from m_ask (ie. the initial mapping)
+    keep_mask = initial_df.apply(
+        lambda row: (str(row.iloc[0]), str(row.iloc[1])) not in m_ask_pairs,
+        axis=1
+    )
+    retained = initial_df[keep_mask]
+
+    # m_ask entries where oracle predicted true
+    oracle_accepted = filter_accepted_predictions(preds)
+
+    # take the first N columns matching the initial alignment format (combine)
+    ncols = len(initial_df.columns)
+    accepted_subset = oracle_accepted.iloc[:, :ncols].copy()
+    accepted_subset.columns = initial_df.columns
+
+    refined = pd.concat([retained, accepted_subset], ignore_index=True)
+
+    # write to the refined output directory
+    output_path = ctx.run_paths.refined_mappings_tsv()
+    os.makedirs(ctx.run_paths.refined_dir, exist_ok=True)
+    refined.to_csv(output_path, sep='\t', header=False, index=False)
+
+    step(f"[Step 4] KG refined alignment: {len(refined)} mappings "
+         f"({len(retained)} retained + {len(accepted_subset)} oracle-accepted)")
+
+
+
 def align(ctx: PipelineContext) -> AlignmentResult:
     """
-    Docstring for align
-
+    Step 1: Pass the neccesary files to LogMap to perform an initial alignment and get M_ask.
     `import bridging as br` allows for mapping LogMap IO between java and python (and vice versa)
-
-    :param ctx: Description
-    :type ctx: PipelineContext
-    :return: Description
-    :rtype: AlignmentResult
     """
     import logmap_llm.bridging as br
 
@@ -105,61 +213,14 @@ def align(ctx: PipelineContext) -> AlignmentResult:
         case _:
             fatal(f"config: align_ontologies param not recognised: {ctx.cfg.pipeline.align_ontologies}")
 
-    return result
-
-
-
-# TODO: migrate to utils py
-def _detect_bidirectional(prompts: dict) -> bool:
-    """
-    Detect whether prompts were built in bidirectional mode.
-    Bidirectional prompt keys have a direction suffix: `src_uri|tgt_uri|REVERSE`.
-    Standard keys have just: `src_uri|tgt_uri`.
-    """
-    if not prompts:
-        return False
-    return any(key.count(PAIRS_SEPARATOR) >= 2 for key in prompts)
-
-
-
-# TODO: migrate to utils py
-def _validate_prompt_keys(prompts: dict, bidirectional: bool, template_name: str = "") -> None:
-    """
-    Validate that prompt key format matches the consultation mode.
-    """
-    if not prompts:
-        return
-    
-    keys_have_direction = _detect_bidirectional(prompts)
-    
-    if bidirectional and not keys_have_direction:
-        raise ValueError(
-            f"Bidirectional template '{template_name}' selected but prompts "
-            f"lack direction keys (e.g. '...|REVERSE'). The prompt JSON was "
-            f"likely built with a non-bidirectional template. Rebuild prompts "
-            f"or select a matching template."
-        )
-    if not bidirectional and keys_have_direction:
-        raise ValueError(
-            f"Standard template '{template_name}' selected but prompts have "
-            f"direction keys (e.g. '...|REVERSE'). The prompt JSON was likely "
-            f"built with a bidirectional template. Rebuild prompts or select "
-            f"a matching template."
-        )
-
+    fatal(f"unable to match on: {ctx.cfg.pipeline.align_ontologies}")
 
 
 
 def prompt_build(ctx: PipelineContext, initial_alignment: AlignmentResult) -> PromptBuildResult:
     """
     Step 2: Build user prompts for oracle consultation.
-
-    In BUILD mode, dispatches to pipeline/stage_two.py as a subprocess to isolate owlready2 from JPype.
-
-    Parameters
-    ----------
-    ctx : PipelineContext
-    initial_alignment : AlignmentResult
+    In BUILD mode, dispatches to pipeline/stage_two.py as a subprocess (isolates JVMs & owlready2).
     """
     step("[Step 2] Build user prompts for oracle consultation")
 
@@ -223,36 +284,22 @@ def prompt_build(ctx: PipelineContext, initial_alignment: AlignmentResult) -> Pr
         case _:
             fatal(f"config: build_oracle_prompts param not recognised: {ctx.cfg.pipeline.build_oracle_prompts}")    
 
-
-    # TODO: migrate to runner.py
-    if result.n_prompts > 0:
-
-        if result.bidirectional:
-
-            n_candidates = result.n_prompts // 2
-
-            success(f"Number of LLM oracle user prompts: {result.n_prompts} ({n_candidates} candidates x 2 directions)")
-        else:
-            success(f"Number of LLM oracle user prompts: {result.n_prompts}")
-
-    return result
+    fatal(f"unable to match on: {ctx.cfg.pipeline.build_oracle_prompts}")
 
 
 
 def consult_oracle(ctx: PipelineContext, initial_alignment: AlignmentResult, prompt_build_result: PromptBuildResult) -> OracleResult:
     """
     Step 3: Consult Oracle for mappings to ask.
-
-    Parameters
-    ----------
-    ctx : PipelineContext
-    initial_alignment : AlignmentResult
-    prompt_build_result : PromptBuildResult
     """
     import logmap_llm.oracle.prompts.developer as dp
     import logmap_llm.oracle.consultation as oc
 
     step("[Step 3] Consult Oracle for mappings to ask")
+
+    # PROMPT TEMPLATE SWITCHING LOGIC
+    #################################
+    # TODO: neatly rework
 
     cls_dev_prompt_text = dp.get_developer_prompt(
         name=ctx.cfg.prompts.cls_dev_prompt_template_name,
@@ -291,12 +338,13 @@ def consult_oracle(ctx: PipelineContext, initial_alignment: AlignmentResult, pro
             if prompt_build_result.prompts is None or len(prompt_build_result.prompts) == 0:
 
                 warn("[Step 3] No prompts available — skipping oracle consultation")
-                result = OracleResult() 
-                
-                # NOTE: it would be nice if you could break from a switch in Python ...
-                # (prefer guard clauses over if-else; could look to return TODO)
+                return OracleResult() 
             
             else:
+
+                # FEW-SHOT-HANDLER
+                ##################
+                # TODO: neatly rework
 
                 if ctx.cfg.few_shot.few_shot_k > 0:
 
@@ -318,6 +366,7 @@ def consult_oracle(ctx: PipelineContext, initial_alignment: AlignmentResult, pro
 
                     few_shot_examples = None
 
+                # END: FEW-SHOT-HANDLER
 
                 oracle_kwargs = dict(
                     m_ask_prompts=prompt_build_result.prompts,
@@ -336,15 +385,15 @@ def consult_oracle(ctx: PipelineContext, initial_alignment: AlignmentResult, pro
                     step(f"[Step 3] Consulting LLM oracle with model: {ctx.cfg.oracle.model_name}")
                     oracle_predictions_df = oc.consult_oracle_for_mappings_to_ask(**oracle_kwargs)
 
-                result = OracleResult(
+                oracle_result = OracleResult(
                     predictions=oracle_predictions_df,
                     oracle_params=oracle_kwargs,
                     bidirectional=prompt_build_result.bidirectional,
                 )
-
-                if result.predictions is not None:
-                    result.predictions.to_csv(ctx.run_paths.predictions_csv(), na_rep="nan")    # ensure round-trip-ability
-                    success(f"Oracle predictions saved to: {ctx.run_paths.predictions_csv()}")  # under pd.read_csv
+                oracle_result.predictions.to_csv(
+                    ctx.run_paths.predictions_csv(), na_rep="nan"
+                ) # ensure round-trip-ability under pd.read_csv^
+                return oracle_result
 
         case ConsultMode.REUSE:
 
@@ -356,7 +405,7 @@ def consult_oracle(ctx: PipelineContext, initial_alignment: AlignmentResult, pro
         case ConsultMode.LOCAL:
 
             step(f"[Step 3] Local oracle predictions from: {ctx.cfg.oracle.local_oracle_predictions_dirpath}")
-            result = OracleResult(
+            return OracleResult(
                 local_dir=ctx.cfg.oracle.local_oracle_predictions_dirpath,
                 predictions=None,
             )
@@ -364,99 +413,18 @@ def consult_oracle(ctx: PipelineContext, initial_alignment: AlignmentResult, pro
         case ConsultMode.BYPASS:
 
             warn("Bypassing oracle consultations")
-            result = OracleResult()
+            return OracleResult()
 
         case _:
             fatal(f"config: consult_oracle param not recognised: {ctx.cfg.pipeline.consult_oracle}")
 
-
-    # TODO: migrate to runner.py
-    if result.prediction_summary() is not None:
-        success(f"\n\n{result.prediction_summary()}")
-    else:
-        warning("There is NO ORACLE PREDICTION SUMMARY available")
-
-    return result
-
-
-
-def _kg_refine_in_python(ctx: PipelineContext, oracle_result: OracleResult) -> None:
-    """
-    Produce refined alignment for KG track in Python.
-
-    Computes: refined = { initial - M_ask } U { m ∈ M_ask : oracle(m) = True }
-
-    LogMap's Java refinement crashes with NullPointerExceptions when
-    processing instance mappings (the bulk of the KG track), so we
-    bypass it entirely.
-
-    TODO: we need to test the new LogMap build by actually refining it, the NPE _should_ have disappeared 
-    a this point.
-
-    TODO: _kg_refine_in_python should handle both pipe and tab separators, or use the same format detection 
-    logic as evaluate.py.
-    """
-    from logmap_llm.constants import (
-        COL_SOURCE_ENTITY_URI,
-        COL_TARGET_ENTITY_URI,
-        COL_RELATION,
-        COL_CONFIDENCE,
-        COL_ENTITY_TYPE,
-    )
-
-    # load initial alignment
-    initial_path = ctx.run_paths.logmap_mappings()
-    initial_df = pd.read_csv(initial_path, sep=PAIRS_SEPARATOR, header=None)
-    initial_df.columns = [
-        COL_SOURCE_ENTITY_URI,
-        COL_TARGET_ENTITY_URI,
-        COL_RELATION,
-        COL_CONFIDENCE,
-        COL_ENTITY_TYPE
-    ][:len(initial_df.columns)]
-
-    # build set of m_ask pairs
-    preds = oracle_result.predictions
-    m_ask_pairs = set()
-    
-    for _, row in preds.iterrows():
-        m_ask_pairs.add((str(row.iloc[0]), str(row.iloc[1])))
-
-    # retain rows disjoint from m_ask (ie. the initial mapping)
-    keep_mask = initial_df.apply(
-        lambda row: (str(row.iloc[0]), str(row.iloc[1])) not in m_ask_pairs,
-        axis=1
-    )
-    retained = initial_df[keep_mask]
-
-    # m_ask entries where oracle predicted true
-    oracle_accepted = filter_accepted_predictions(preds)
-
-    # take the first N columns matching the initial alignment format (combine)
-    ncols = len(initial_df.columns)
-    accepted_subset = oracle_accepted.iloc[:, :ncols].copy()
-    accepted_subset.columns = initial_df.columns
-
-    refined = pd.concat([retained, accepted_subset], ignore_index=True)
-
-    # write to the refined output directory
-    output_path = ctx.run_paths.refined_mappings_tsv()
-    os.makedirs(ctx.run_paths.refined_dir, exist_ok=True)
-    refined.to_csv(output_path, sep='\t', header=False, index=False)
-
-    step(f"[Step 4] KG refined alignment: {len(refined)} mappings "
-         f"({len(retained)} retained + {len(accepted_subset)} oracle-accepted)")
+    fatal(f"unable to match on: {ctx.cfg.pipeline.consult_oracle}")
 
 
 
 def refine_alignment(ctx: PipelineContext, oracle_result: OracleResult) -> RefinementResult:
     """
     Step 4: Refine alignment using oracle mapping predictions.
-
-    Parameters
-    ----------
-    ctx : PipelineContext
-    oracle_result : OracleResult
     """
     import logmap_llm.bridging as br
 
@@ -483,8 +451,7 @@ def refine_alignment(ctx: PipelineContext, oracle_result: OracleResult) -> Refin
                     shutil.copy2(str(src), str(dst))
                     step(f"[Step 4] Initial alignment copied to refined dir: {dst.name}")
 
-                result = RefinementResult()
-                return result
+                return RefinementResult()
 
             # KG track: there exists a bug in the LogMap KG track execution path
             # For now, we bypass LogMap's Java refinement (since it crashes with NPEs 
@@ -500,8 +467,7 @@ def refine_alignment(ctx: PipelineContext, oracle_result: OracleResult) -> Refin
 
                 step("[Step 4] Python-based refinement (set-union bypass)")
                 _kg_refine_in_python(ctx, oracle_result)
-                result = RefinementResult()
-                return result
+                return RefinementResult()
 
             if oracle_result.has_predictions:
                 
@@ -513,7 +479,7 @@ def refine_alignment(ctx: PipelineContext, oracle_result: OracleResult) -> Refin
                 ctx.logmap.refine_alignment(preds_java)
                 mappings_java = ctx.logmap.get_mappings()
                 step(f"[Step 4] Number of mappings in LogMap refined alignment: {len(mappings_java)}")
-                result = RefinementResult(
+                return RefinementResult(
                     refined_mappings=br.java_mappings_2_python(mappings_java)
                 )
 
@@ -523,7 +489,7 @@ def refine_alignment(ctx: PipelineContext, oracle_result: OracleResult) -> Refin
                 ctx.logmap.refine_alignment(str(oracle_result.local_dir))
                 mappings_java = ctx.logmap.get_mappings()
                 step(f"[Step 4] Number of mappings in LogMap refined alignment: {len(mappings_java)}")
-                result = RefinementResult(
+                return RefinementResult(
                     refined_mappings=br.java_mappings_2_python(mappings_java)
                 )
 
@@ -539,19 +505,30 @@ def refine_alignment(ctx: PipelineContext, oracle_result: OracleResult) -> Refin
         case RefineMode.BYPASS:
 
             warn("Bypassing alignment refinement")
-            result = RefinementResult()
+            return RefinementResult()
 
         case _:
             fatal(f"config: refine_alignment param not recognised: {ctx.cfg.pipeline.refine_alignment}")
 
-    return result
+    fatal(f"unable to match on: {ctx.cfg.pipeline.refine_alignment}")
 
 
 
 def evaluate(ctx) -> EvaluationResult:
     """
-    Step 5: Evaluate the refined alignment
-    Dispatches to evaluation/evaluate.py as a subprocess (for JVM isolation due to DeepOnto)
+    Step 5: Evaluate the refined alignment.
+    Similarly to step two (build_prompts), the evaluate method (which uses the DeepOnto evaluator
+    by default -- which requires the use of another JVM) dispatches to logmap_llm.evaluation.harness
+    as a subprocess; again, this is for JVM isolation (due to DeepOnto); however, we should note that
+    this is not !! strictly !! neccesary, since we also implement our own evalution under the
+        CustomEvaluationEngine class in logmap_llm.evaluation.engines.custom
+    The architectural design decision to use extendable evaluation engines is based on the knowledge
+    that actually multiple evaluators exist, eg. 'MELT', 'HOBBIT', 'SEALS', 'DeepOnto', and so forth
+        (users should be able to extend the EvaluationEngine class and make use of their preffered 
+         evaluator of choice; many of which do utilise another JVM instance, so isolating the evaluate
+         procedure as a subprocess is _arguably_ _fairly_ sensible, though, not required for instances
+         that use the CustomEvaluationEngine -- worth noting)
+    Note: Evaluation can be skipped by setting 'evaluate = false' under '[evaluation]' in config.toml
     """
     step("[Step 5] Evaluation")
 
@@ -564,7 +541,7 @@ def evaluate(ctx) -> EvaluationResult:
         return EvaluationResult()
 
     cmd = [
-        sys.executable, "-m", "logmap_llm.evaluation.evaluate",
+        sys.executable, "-m", "logmap_llm.evaluation.harness",
         "--config", ctx.config_path,
     ]
 
@@ -575,7 +552,6 @@ def evaluate(ctx) -> EvaluationResult:
     if proc.returncode != 0:
         warning(f"Evaluation subprocess exited with code {proc.returncode}")
 
-    # try to load the results
     eval_results_path = os.path.join(
         ctx.cfg.outputs.logmapllm_output_dirpath,
         "evaluation_results.json",

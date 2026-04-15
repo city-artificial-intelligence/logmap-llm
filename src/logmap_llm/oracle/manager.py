@@ -1,6 +1,6 @@
 '''
 logmap_llm.oracle.manager
-Contains OracleConsultationManager which manages LLM interactions via the OpenAI SDK. 
+Contains OracleConsultationManager/s which manages LLM interactions via the OpenAI SDK. 
 Supporting both OpenRouter and local endpoints (vLLM, SGLang).
 '''
 from __future__ import annotations
@@ -295,11 +295,10 @@ class OracleConsultationManager:
     def _parse_plain_text_answer(raw_content: str) -> BinaryOutputFormat:
         """
         Parse a plain-text LLM response into a BinaryOutputFormat.
-        Permissive parsing: lowercases, strips common punctuation/quoting,
+        Permissive parsing means lowercases, strips common punctuation/quoting,
         and matches against POSITIVE_TOKENS / NEGATIVE_TOKENS. Used both
         as the primary parser in plain mode and as a fallback inside
-        _consult_via_create when guided JSON decoding fails.
-        Raises ValueError if the response cannot be classified.
+        _consult_via_create when guided JSON decoding fails
         """
         if raw_content is None:
             raise ValueError("LLM returned empty response")
@@ -318,11 +317,11 @@ class OracleConsultationManager:
 
     def _consult_via_plain(self, prompt, developer_override=None):
         """
-        Consult via create() WITHOUT response_format constraint.
-        The model produces free-form text and we parse it ourselves
-        against POSITIVE_TOKENS / NEGATIVE_TOKENS. Works identically
+        Consult via create() WITHOUT response_format constraint;
+        if the model produces free-form text, we parse it ourselves
+        against POSITIVE_TOKENS, NEGATIVE_TOKENS. It works identically
         against any OpenAI-compatible endpoint (OpenRouter, vLLM, SGLang)
-        because no provider-specific schema mechanism is involved.
+        because no provider-specific schema mechanism is involved
         """
         kwargs = self._build_base_kwargs(prompt, developer_override)
         kwargs["max_tokens"] = self.max_completion_tokens        

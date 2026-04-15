@@ -7,8 +7,8 @@ from enum import Enum
 # DEBUGGING
 ###
 
-VERBOSE = True
-VERY_VERBOSE = True
+VERBOSE = False
+VERY_VERBOSE = False
 
 ###
 # ORACLE-RELATED PYDANTIC (SCHEMA) MODELS:
@@ -307,3 +307,37 @@ DEFAULT_SIBLING_STRATEGY = "sapbert"
 # In some (rare) cases, this may be impossible to satisfy; so we cap the max 
 # retries to avoid an infinite loop (how likely are we to encounter N collisions?)
 DEFAULT_MAX_SAMPLE_RETRIES = 50
+
+###
+# CONSTANTS - EVALUATION
+# ----------------------
+###
+
+# used to identify files that satisfy the DeepOnto TSV convention for 
+# ontology matching / mapping / alignment tasks, used in their own evaluation
+# implementation (that we re-use, and borrow form)
+# DeepOnto library: https://github.com/KRR-Oxford/DeepOnto
+DEEPONTO_TSV_HEADER_PREFIXES: tuple[str, ...] = ("SrcEntity",)
+
+
+###
+# CONSTANTS - BRIDGING
+# --------------------
+###
+
+###
+# CONFIDENCE COERCION AT THE JAVA BOUNDARY
+# ---------------------------------------- 
+# when the oracle accepts a mapping but no usable logprob token was emitted,
+# calculate_logprobs_confidence returns float('nan'); passing NaN to LogMap
+# for a confidence value via MappingObjectStr(..., double conf, ...) is technically
+# type-correct, but may notbe semantically coherant; and could possibly cause some
+# kind of failure mode within LogMap; to protect agaisnt this, we coerce NaN to a 
+# concrete default (ie. 1.0; confident 'True' -- or "yes, this mapping is correct")
+# which I'm quite sure is the 'expected behaviour' (the oracle is assumed to produce
+# a binary answer, either yes or no) ... and this only fires for oracle predictions
+# that predict the mapping to be true; so, this should be fine.
+###
+
+DEFAULT_CONFIDENCE_FALLBACK = 1.0
+

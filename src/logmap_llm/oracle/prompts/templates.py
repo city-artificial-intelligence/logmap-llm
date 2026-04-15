@@ -1106,6 +1106,7 @@ def get_oracle_user_prompt_template_function(oupt_name: str) -> Callable:
 # PROMPT-BUILDING ORCHESTRATION
 ###
 
+# TODO: rework mess
 def build_oracle_user_prompts(oupt_name, onto_src_filepath, onto_tgt_filepath, m_ask_df,
                                OA_source=None, OA_target=None, sibling_selector=None,
                                property_prompt_function=None, instance_prompt_function=None,
@@ -1185,7 +1186,7 @@ def build_oracle_user_prompts(oupt_name, onto_src_filepath, onto_tgt_filepath, m
     return m_ask_oracle_user_prompts
 
 
-
+# TODO: rework mess
 def build_oracle_user_prompts_bidirectional(oupt_name, onto_src_filepath, onto_tgt_filepath,
                                              m_ask_df, OA_source=None, OA_target=None,
                                              sibling_selector=None):
@@ -1243,6 +1244,7 @@ def build_oracle_user_prompts_bidirectional(oupt_name, onto_src_filepath, onto_t
 # MISC FUNCS
 ###
 
+# TODO: migrate to preferable location (isn't this an older legacy fn?)
 def load_ontologies(onto_src_filepath, onto_tgt_filepath, cache_dir=None):
     '''
     Load and return OntologyAccess objects for source and target ontologies.

@@ -35,6 +35,8 @@ _DEFAULT_YELLOW = "\033[0;33;49m" # kinda orange
 _PASTEL_BLUE = "\033[38;5;117m"
 _GREEN = "\033[38;5;114m"
 _ITALIC_MAGENTA_W_BG = "\033[3;95;40m"
+_METRIC_BLUE = "\033[0;94m"
+_METRIC_FAINT_GREEN = "\033[0;38;5;157;49m"
 
 # regex to strip ANSI escape sequences for log-file output
 _ANSI_RE = re.compile(r"\033\[[0-9;]*m")
@@ -116,6 +118,13 @@ def debug(msg: str) -> None:
     ```
     """
     print(f"{_ITALIC_MAGENTA_W_BG}[DEBUG] {msg}{_RESET}")
+
+
+def metric(msg: str) -> None:
+    """
+    Print a metric message in 'high intensity' blue.
+    """
+    print(f"{_METRIC_FAINT_GREEN}[METRIC] {msg}{_RESET}")
 
 
 ###
