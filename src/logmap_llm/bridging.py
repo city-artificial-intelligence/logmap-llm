@@ -104,22 +104,16 @@ relation_str_2_int = {
 
 # Example M_ASK file: https://ontozoo.io/public_dir/examples/example_m_ask.txt
 
-# As such, we define the 'columns' for re-use later below.
+# As such, we define the 'columns' for re-use later below 
+# (now imported from logmap_llm.constants.py)
 
-COL_SOURCE_ENTITY_URI = 'source_entity_uri'
-COL_TARGET_ENTITY_URI = 'target_entity_uri'
-COL_RELATION = 'relation'
-COL_CONFIDENCE = 'confidence'
-COL_ENTITY_TYPE = 'entityType'
-
-# Note M_ASK_COLUMNS is an immutable tuple:
-
-M_ASK_COLUMNS = (
+from logmap_llm.constants import (
     COL_SOURCE_ENTITY_URI,
     COL_TARGET_ENTITY_URI,
     COL_RELATION,
     COL_CONFIDENCE,
     COL_ENTITY_TYPE,
+    M_ASK_COLUMNS,
 )
 
 # to obtain a mutable list, use the following fn:

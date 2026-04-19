@@ -37,6 +37,7 @@ from openai import BadRequestError
 import pandas as pd
 
 
+
 def retry(max_retries: int = 2, on: tuple = (Exception,), on_final_failure=None):
     """
     Retry the function up to ``max_retries`` times if an exception occurs.
@@ -63,10 +64,12 @@ def retry(max_retries: int = 2, on: tuple = (Exception,), on_final_failure=None)
     return decorator
 
 
+
 def _consultation_failure_record(func, args, kwargs, exc):
     key = args[0] if args else kwargs.get("key", "<unknown>")
     warning(f"Consultation for {key} exhausted retries: {type(exc).__name__}: {exc}")
     return key, "error", float('nan'), TokensUsage(input_tokens=None, output_tokens=None)
+
 
 
 def _debug_conversation_history(llm_oracle):
@@ -75,6 +78,7 @@ def _debug_conversation_history(llm_oracle):
     for n_message, message in enumerate(llm_oracle.messages):
         debug(f"Message {n_message}: {message}")
     print()
+
 
 
 def get_llm_mapping_prediction(response):
@@ -90,6 +94,7 @@ def get_llm_mapping_prediction(response):
         else:
             raise ValueError(f"YesNoOutputFormat answer not recognised: '{response.parsed.answer}'")
     raise NotImplementedError()
+
 
 
 def calculate_logprobs_confidence(log_probs: list) -> float:
@@ -139,6 +144,7 @@ def calculate_logprobs_confidence(log_probs: list) -> float:
     return float('nan')
 
 
+
 def _check_failure_abort(prediction_status, consecutive_failures, cumulative_failures, failure_tolerance, 
                          consecutive_limit=DEFAULT_CONSECUTIVE_FAILURE_TOLERANCE) -> tuple[bool, int, int]:
     if prediction_status != "error":
@@ -149,6 +155,7 @@ def _check_failure_abort(prediction_status, consecutive_failures, cumulative_fai
     cumulative_failures += 1
     should_abort: bool = (consecutive_failures >= consecutive_limit or cumulative_failures >= failure_tolerance)
     return should_abort, consecutive_failures, cumulative_failures
+
 
 
 def _resolve_failure_tolerance(oracle_cfg: OracleConfig, n_total: int) -> int:
@@ -162,6 +169,7 @@ def _resolve_failure_tolerance(oracle_cfg: OracleConfig, n_total: int) -> int:
     return effective_faulure_tolerance
 
 
+
 def _print_abort_message(consecutive_failures: int, cumulative_failures: int, failure_tolerance: int) -> None:
     critical("\nABORTING Oracle consultations prematurely! Error report:")
     if consecutive_failures >= DEFAULT_CONSECUTIVE_FAILURE_TOLERANCE:
@@ -169,6 +177,7 @@ def _print_abort_message(consecutive_failures: int, cumulative_failures: int, fa
     critical(f"  {cumulative_failures} cumulative failures (threshold: {failure_tolerance})")
     warning("Pending consultations will be cancelled.")
     warning("Running consultations will run to completion.\n")
+
 
 
 def _build_oracle_manager(oracle_cfg: OracleConfig, developer_prompt_text: str | None, 
@@ -195,6 +204,7 @@ def _build_oracle_manager(oracle_cfg: OracleConfig, developer_prompt_text: str |
     return llm_oracle
 
 
+
 def _build_pair_entity_types(m_ask_init_alignment_df: pd.DataFrame) -> dict[str, str]:
     """
     Build src|tgt -> entityType lookup from m_ask DataFrame; used for obtaining the neccesary 
@@ -212,6 +222,7 @@ def _build_pair_entity_types(m_ask_init_alignment_df: pd.DataFrame) -> dict[str,
     return pair_entity_types
 
 
+
 def _resolve_developer_override(full_key: str, developer_prompt_map: dict | None, pair_entity_types: dict[str, str]) -> str | None:
     if not developer_prompt_map:
         return None
@@ -220,10 +231,13 @@ def _resolve_developer_override(full_key: str, developer_prompt_map: dict | None
     return developer_prompt_map.get(etype)
 
 
+
 def _run_consultations(llm_oracle: OracleConsultationManager, m_ask_prompts: dict[str, str], 
                        pair_entity_types: dict[str, str], developer_prompt_map: dict | None, 
                        max_workers: int, failure_tolerance: int, desc: str) -> dict | None:
-    """Dispatches all prompts in parallel; returns None if aborted"""
+    """
+    Dispatches all prompts in parallel; returns None if aborted
+    """
     results = {}
     consecutive_failures = 0
     cumulative_failures = 0
@@ -241,19 +255,21 @@ def _run_consultations(llm_oracle: OracleConsultationManager, m_ask_prompts: dic
         for future in tqdm(as_completed(futures), total=len(futures), desc=desc):
             try:
                 key, prediction, confidence, usage = future.result()
+                results[key] = (prediction, confidence, usage)
+                continue
             except Exception as e:
-                should_abort, consecutive_failures, cumulative_failures = _check_failure_abort(
-                    prediction, consecutive_failures, cumulative_failures, failure_tolerance,
-                )
-                if should_abort:
-                    _print_abort_message(consecutive_failures, cumulative_failures, failure_tolerance)
-                    executor.shutdown(wait=True, cancel_futures=True)
-                    return None
                 warning(f"Consultation exhausted retries and raised: {type(e).__name__}: {e}")
-
-            results[key] = (prediction, confidence, usage)
+            
+            should_abort, consecutive_failures, cumulative_failures = _check_failure_abort(
+                "error", consecutive_failures, cumulative_failures, failure_tolerance,
+            )
+            if should_abort:
+                _print_abort_message(consecutive_failures, cumulative_failures, failure_tolerance)
+                executor.shutdown(wait=True, cancel_futures=True)
+                return None
 
     return results
+
 
 
 @retry(max_retries=2, on_final_failure=_consultation_failure_record)
@@ -273,6 +289,7 @@ def consult_oracle_for_mapping(key, prompt, llm_oracle, developer_override=None)
             error_msg = str(bre)
         warning(f'BadRequestError: {error_msg} (for mapping: {key})')
         return key, "error", float("nan"), TokensUsage(input_tokens=None, output_tokens=None)
+
 
 
 def consult_oracle_for_mappings_to_ask(
@@ -332,6 +349,7 @@ def consult_oracle_for_mappings_to_ask(
     m_ask_df_ext['Oracle_output_tokens'] = pd.Series(ordered_out, dtype="Int64")    # nullable
 
     return m_ask_df_ext
+
 
 
 def consult_oracle_bidirectional(

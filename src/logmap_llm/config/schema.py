@@ -17,6 +17,11 @@ from logmap_llm.constants import (
     AnswerFormat,
     DEFAULT_ANSWER_FORMAT,
     DEFAULT_RESPONSE_MODE,
+    InteractionStyle,
+)
+from logmap_llm.ontology.vocabularies import (
+    OntologyConventionVocabulary,
+    get_preset,
 )
 from logmap_llm.utils.logging import warn
 
@@ -28,6 +33,18 @@ class AlignmentTaskConfig(BaseModel):
     generate_extended_mappings_to_ask_oracle: bool = False
     logmap_parameters_dirpath: str = ""
     ontology_domain: str | None = None
+    ontology_vocabulary: str = "default"
+
+    @model_validator(mode="after")
+    def _validate_vocabulary_preset(self) -> "AlignmentTaskConfig":
+        """fail fast on unknown vocabulary names at config-load time"""
+        get_preset(self.ontology_vocabulary)  # raises ValueError if unknown
+        return self
+
+    @property
+    def resolved_vocabulary(self) -> OntologyConventionVocabulary:
+        """the actual vocabulary instance, resolved from the preset name"""
+        return get_preset(self.ontology_vocabulary)
 
 
 class PromptTemplateConfig(BaseModel):
@@ -86,7 +103,14 @@ class OracleConfig(BaseModel):
     reasoning_effort: Optional[str]       = "minimal"        # default minimal (check supported model docs for settings)
     local_oracle_predictions_dirpath: str = ""               #
 
-    interaction_style: Optional[Literal["auto", "openrouter", "vllm"]] = "auto"
+    interaction_style: Optional[Literal[
+        InteractionStyle.AUTOMATIC,
+        InteractionStyle.OPEN_AI_CHAT_COMPLETIONS_PARSE,
+        InteractionStyle.OPEN_ROUTER,
+        InteractionStyle.LOCAL_GENERIC,
+        InteractionStyle.LOCAL_VLLM,
+        InteractionStyle.LOCAL_SG_LANG,
+    ]] = InteractionStyle.AUTOMATIC
 
     '''
     Note, at present there is some _delicate_ global state in templates.py that depends on
@@ -109,6 +133,7 @@ class OracleConfig(BaseModel):
 
     _NON_KWARG_FIELDS: ClassVar[frozenset[str]] = frozenset({
         "local_oracle_predictions_dirpath",
+        "api_key",
     })
 
     @property
@@ -123,7 +148,8 @@ class OracleConfig(BaseModel):
         """Accept legacy `openrouter_model_name` key with a deprecation warning."""
         if isinstance(data, dict) and "openrouter_model_name" in data:
             if "model_name" not in data:
-                warn("Config key 'openrouter_model_name' is deprecated; use 'model_name' instead.")
+                warn("Config key 'openrouter_model_name' is DEPRECATED; use 'model_name' instead.")
+                warn(" ... ((moving config value: `openrouter_model_name` -> `model_name`))")
                 data["model_name"] = data.pop("openrouter_model_name")
             else:
                 data.pop("openrouter_model_name") # silently drops (both present)
@@ -135,7 +161,8 @@ class OracleConfig(BaseModel):
         """Accept legacy `openrouter_apikey` key with a deprecation warning."""
         if isinstance(data, dict) and "openrouter_apikey" in data:
             if "api_key" not in data:
-                warn("Config key `openrouter_apikey` is deprecated; use `api_key` instead.")
+                warn("Config key `openrouter_apikey` is DEPRECATED; use `api_key` instead.")
+                warn(' ... ((moving config value: `openrouter_apikey` -> `api_key`))')
                 data["api_key"] = data.pop("openrouter_apikey")
             else:
                 data.pop("openrouter_apikey") # silently drops (both present)

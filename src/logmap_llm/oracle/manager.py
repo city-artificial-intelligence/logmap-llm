@@ -22,10 +22,7 @@ from logmap_llm.constants import (
 )
 from logmap_llm.utils.misc import resolve_response_format_to_str
 from logmap_llm.utils.logging import (
-    info,
-    warn,
     warning,
-    critical,
     debug,
 )
 import json
@@ -36,7 +33,6 @@ class OracleConsultationManager:
     Manages consultations with an LLM Oracle via OpenAI-compatible API.
     Supports OpenRouter, vLLM, SGLang, and any OpenAI-compatible endpoint.
     """
-
     def __init__(self, api_key: str, model_name: str, interaction_style: str, base_url: str, temperature: float, top_p: float, 
                  reasoning_effort: str | None, max_completion_tokens: int, enable_thinking: bool, supports_chat_template_kwargs: bool | None = None,
                  response_format: BinaryOutputFormat | BinaryOutputFormatWithReasoning | YesNoOutputFormat | YesNoOutputFormatWithReasoning | None = None):
@@ -125,11 +121,11 @@ class OracleConsultationManager:
         """
         Translates the configured interaction_style into a concrete enum value (see constants.py).
         """
-        if requested == 'auto':
+        if requested.lower() == InteractionStyle.AUTOMATIC:
             if 'openrouter.ai' in (base_url or ''):
                 return InteractionStyle.OPEN_ROUTER
             # else (not openrouter):
-            return InteractionStyle.LOCAL_VLLM
+            return InteractionStyle.LOCAL_VLLM # compatible \w vLLM & SGLang
         # else (not auto):
         try:
             return InteractionStyle(requested)
@@ -280,7 +276,7 @@ class OracleConsultationManager:
         )
         try:
             logprobs = response.choices[0].logprobs.model_dump()["content"]
-        except AttributeError:
+        except (AttributeError, KeyError, TypeError):
             logprobs = []
 
         return LLMCallOutput(

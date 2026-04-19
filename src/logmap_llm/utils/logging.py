@@ -33,6 +33,7 @@ _PASTEL_YELLOW = "\033[0;38;5;186;49m"
 _BRIGHT_YELLOW_BOLD_AND_UNDERLINED = "\033[1;4;93;49m" # for critical warnings 
 _DEFAULT_YELLOW = "\033[0;33;49m" # kinda orange
 _PASTEL_BLUE = "\033[38;5;117m"
+_IMPORTANT_STEP_PURPLE = "\033[0;38;2;255;179;219;49m"
 _GREEN = "\033[38;5;114m"
 _ITALIC_MAGENTA_W_BG = "\033[3;95;40m"
 _METRIC_BLUE = "\033[0;94m"
@@ -79,19 +80,19 @@ def warn(msg: str) -> None:
     print(f"{_PASTEL_YELLOW}[WARNING] {msg}{_RESET}")
 
 
-def info(msg: str) -> None:
+def info(msg: str, important: bool = False) -> None:
     """
     Print important information in pastel sky-blue. Prefixed with INFO.
     """
-    print(f"{_PASTEL_BLUE}[INFO] {msg}{_RESET}")
+    print(f"{_PASTEL_BLUE if not important else _IMPORTANT_STEP_PURPLE}[INFO] {msg}{_RESET}")
 
 
-def step(msg: str) -> None:
+def step(msg: str, important: bool = False) -> None:
     """
     Print a step / section header in pastel sky-blue.
     By convention, we include [Step X], e.g., "[Step 1] Align ontologies".
     """
-    print(f"{_PASTEL_BLUE}{msg}{_RESET}")
+    print(f"{_PASTEL_BLUE if not important else _IMPORTANT_STEP_PURPLE}{msg}{_RESET}")
 
 
 def success(msg: str) -> None:

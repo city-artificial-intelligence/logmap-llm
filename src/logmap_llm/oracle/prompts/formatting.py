@@ -26,15 +26,24 @@ def get_single_name(name_set: set | list | str | OntologyEntryAttr) -> str | Non
     return next(iter(name_set), None) if isinstance(name_set, (set, list)) else name_set
 
 
+def get_deterministic_single_name(name_set: set | list | str | OntologyEntryAttr) -> str | None:
+    """Get a single name from the name set (deterministic: minimum by lexicographic order)."""
+    if isinstance(name_set, (set, frozenset)):
+        return min(name_set) if name_set else None
+    if isinstance(name_set, list):
+        return name_set[0] if name_set else None
+    return name_set
+
+
 def select_best_direct_entity_names(
     src_entity: OntologyEntryAttr, tgt_entity: OntologyEntryAttr,
 ) -> list:
     """If there are multiple direct parents, select one and find child element for it."""
-    src_parents = next(iter(src_entity.get_direct_parents()), None)
-    tgt_parents = next(iter(tgt_entity.get_direct_parents()), None)
+    src_parent = src_entity.get_direct_parent()
+    tgt_parent = tgt_entity.get_direct_parent()
     return [
         get_name_string(x.get_preferred_names()) if x else None
-        for x in [src_parents, tgt_parents, src_entity, tgt_entity]
+        for x in [src_parent, tgt_parent, src_entity, tgt_entity]
     ]
 
 
@@ -72,7 +81,7 @@ def select_best_direct_entity_names_with_synonyms(
     """
 
     def get_parent_name(entity: OntologyEntryAttr) -> str | None:
-        parent = next(iter(entity.get_direct_parents()), None)
+        parent = entity.get_direct_parent()
         parent_name = get_name_string(parent.get_preferred_names()) if parent else None
         if parent_name == "Thing" and not add_thing:
             return None
@@ -193,12 +202,15 @@ def format_domain_range_clause(
         domain_str = ", ".join(f'"{d}"' for d in sorted(domain_names)) if domain_names else "something"
         range_str = ", ".join(f'"{r}"' for r in sorted(range_names)) if range_names else "something"
 
+        # deterministic:
         if include_synonyms:
             if domain_synonyms:
-                dom_syn = format_synonyms_parenthetical(domain_synonyms, next(iter(domain_names), ""))
+                dom_anchor = min(domain_names) if domain_names else ""
+                dom_syn = format_synonyms_parenthetical(domain_synonyms, dom_anchor)
                 domain_str += dom_syn
             if range_synonyms:
-                rng_syn = format_synonyms_parenthetical(range_synonyms, next(iter(range_names), ""))
+                rng_anchor = min(range_names) if range_names else ""
+                rng_syn = format_synonyms_parenthetical(range_synonyms, rng_anchor)
                 range_str += rng_syn
 
         desc += f" which connects {domain_str} to {range_str}"

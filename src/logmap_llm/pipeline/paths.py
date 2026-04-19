@@ -63,6 +63,9 @@ class PipelinePaths:
     def run_log(self, timestamp: str) -> Path:
         return self.output_dir / f"pipeline_log_{timestamp}.txt"
 
+    def subprocess_log(self, timestamp: str, subprocess_name: str = "UNSET") -> Path:
+        return self.output_dir / f"subprocess_{subprocess_name}_{timestamp}.txt"
+
     def run_results(self, timestamp: str) -> Path:
         return self.output_dir / f"expr_run_results_{timestamp}.txt"
 

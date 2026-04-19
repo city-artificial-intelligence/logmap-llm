@@ -33,7 +33,7 @@ flow can be understood as two overarching phases:
 
         1. align - obtains an initial alignment between the input ontologies
             and produces a set of 'mappings to ask' (or M_ask) for oracle consultation
-         - Takes PipelineContext as input, and produces M_ask and all mappings as output
+         + Takes PipelineContext as input, and produces M_ask and all mappings as output
 
         2. prompt_build - spawns a subprocess that is responsible for building prompts
             from the previously described M_ask file; it uses an ontology-driven prompt
@@ -42,7 +42,7 @@ flow can be understood as two overarching phases:
             is also responsible for constructing the 'few-shot' examples; these prompts
             and examples are then saved to disk. The subprocess is used to avoid issues
             between running multiple JVMs and owlready2 instances concurrently
-         - Takes PipelineContext and align output as input, and produces prompts as output
+         + Takes PipelineContext and align output as input, and produces prompts as output
 
         3. consult_oracle - leverages oracle.consultation (which, in turn leverages
             oracle.manager) to consult an LLM either via OpenRouter or locally (or on
@@ -50,7 +50,7 @@ flow can be understood as two overarching phases:
             about mappings that LogMap was uncertain of, these are generally binary
             classification 'questions' (generated in the prior step) that include
             contextual information regarding entities within the ontologies.
-         - Takes PipelineContext and prompt_build output as input, and produces predictions
+         + Takes PipelineContext and prompt_build output as input, and produces predictions
             as output
 
         4. refinement - passes the predictions (answers) from the oracle consultation
@@ -58,7 +58,7 @@ flow can be understood as two overarching phases:
             and produce a 'refined alignment' which can then either be: (1) used in 
             downstream applications, or (2) compared agaisnt a reference alignment
             to obtain a set of scores (in the next [optional] phase)
-         - Takes PipelineContext and predictions as input, produces a refined alignment
+         + Takes PipelineContext and predictions as input, produces a refined alignment
             as output
 
         5. evaluate - an optional stage that allows for the use of an EvaluationEngine
@@ -69,7 +69,7 @@ flow can be understood as two overarching phases:
             provides a breakdown of TP/FP/TN/[FN] and can also be used for evaluating
             refined alignments agsisnt partial gold standard reference alignments, such
             is the case in OAEI 2025 KG track (uses the semantics specified by the track)
-         - Takes the PipelineContext and refined alignment as input, produces scores (noted
+         + Takes the PipelineContext and refined alignment as input, produces scores (noted
             above) as output, as well as saving them to disk for further inspection and 
             stratification.
 """
@@ -82,9 +82,13 @@ import time
 from datetime import datetime, timezone
 from argparse import Namespace
 
-from logmap_llm.utils.logging import TeeWriter, info, step, success, critical, warning
-from logmap_llm.config.loader import load_and_validate_config, print_config_summary
 from logmap_llm.interface import start_jvm, LogMapInterface
+from logmap_llm.config.schema import LogMapLLMConfig
+from logmap_llm.config.loader import (
+    load_and_validate_config, 
+    print_config_summary,
+)
+from logmap_llm.pipeline.contracts import TimingRecord
 from logmap_llm.pipeline.paths import PipelinePaths
 from logmap_llm.pipeline.context import PipelineContext
 from logmap_llm.pipeline.orchestration import (
@@ -94,12 +98,23 @@ from logmap_llm.pipeline.orchestration import (
     refine_alignment,
     evaluate,
 )
-from logmap_llm.pipeline.contracts import TimingRecord
 from logmap_llm.pipeline.reporting import (
     print_timing_summary,
     print_experimental_parameters,
     write_results_file,
 )
+from logmap_llm.utils.logging import (
+    TeeWriter,
+    info,
+    success,
+    critical,
+)
+
+
+# the aim is that at this level of abstration, the code should be self-documenting
+# it would, however, be helpful to view config/schema.py and pipeline/context.py
+# to understand the what is passed between each phase via PipelineContext.
+
 
 
 def main(args: Namespace | None = None) -> int:
@@ -107,19 +122,17 @@ def main(args: Namespace | None = None) -> int:
     Begin a full pipeline run.
     """
 
+    ###
     # BOOTSTRAPPING
     ###############
 
     if args is None:
         from logmap_llm.pipeline.cli import parse_args
-        args = parse_args()
+        args:Namespace = parse_args()
 
     expr_run_timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
-    # config is specified via the `--config` CLI argument, by specifying an absolute
-    # or relative filepath, this overrides the default
-
-    cfg = load_and_validate_config(
+    cfg:LogMapLLMConfig = load_and_validate_config(
         args.config,
         reuse_align=args.reuse_align,
         reuse_prompts=args.reuse_prompts,
@@ -139,9 +152,6 @@ def main(args: Namespace | None = None) -> int:
     
     run_paths:PipelinePaths = PipelinePaths.from_config(cfg)
 
-    if not run_paths.create_base_dirs():
-        critical("Experimental directories CANNOT BE created OR DO NOT already exist!")
-
     # logging (see utils.logging)
     tee_branch_out:TeeWriter = TeeWriter(
         str(run_paths.run_log(expr_run_timestamp)),
@@ -155,11 +165,16 @@ def main(args: Namespace | None = None) -> int:
         
         info(f"Summary of File Paths:\n\n{run_paths.summary()}\n\n")
 
+        ###
+        # START LOGMAP
+        ##############
+    
         # if logmap_dirpath is unset, it assumes the official logmap directory lives within
         # the project it assumes the official logmap directory lives within the project
         # root (or wherever you run this pipeline from) - required for LogMap params + java-deps
 
         logmap_dirpath = os.path.join(os.getcwd(), 'logmap')
+
         if cfg.alignmentTask.logmap_parameters_dirpath:
             logmap_dirpath = cfg.alignmentTask.logmap_parameters_dirpath
 
@@ -169,15 +184,24 @@ def main(args: Namespace | None = None) -> int:
 
         logmap.set_output_dir(run_paths.initial_dir) # required by config
 
-        # the ontology domain is an optional nice-ity, it allows the prompts to specifically
-        # state which types of ontologies are being aligned (biomedical, conference, kgs, etc)
+
+        # ONTOLOGY DOMAIN
+        #################
+        # allows the prompts to specifically the types of ontologies being aligned 
+        # (eg. 'biomedical', 'conference', 'circular economy', 'knowledge graphs')
 
         if cfg.alignmentTask.ontology_domain:
             info(f"Ontology domain: {cfg.alignmentTask.ontology_domain}\n")
 
-        # at this level of abstration, the code is more-or-less self-documenting
-        # however, it is helpful to review config/schema.py and pipeline/context.py 
-        # to understand the what is passed between each phase via PipelineContext.
+        if not run_paths.create_base_dirs():
+            critical("Experimental directories CANNOT BE created OR DO NOT already exist!")
+
+
+        # PIPELINE CONTEXT (CTX)
+        ########################
+        # the pipeline context is an object that bundles the relevant 'context' (similar to
+        # a global config object + convienent accessors) between each pipeline phase, so that
+        # we don't have to pass a VERY LARGE list of parameters down the entire call stack
 
         pipeline_ctx = PipelineContext(cfg, run_paths, logmap, config_path=args.config)
 
@@ -185,8 +209,11 @@ def main(args: Namespace | None = None) -> int:
         # PIPELINE PHASES
         #################
         # the pipeline phases (as described in the module doc-string) follow the pattern:
-        # (1) start timer, (2) execute phase (imported from orchestration.py) (3) stop timer
-        # (4) print completion message (5) continue to next phase
+        # (1) start timer
+        # (2) execute phase (imported from orchestration.py) 
+        # (3) stop timer
+        # (4) print completion message 
+        # (5) continue to next phase
 
         info("LogMap-LLM pipeline starting.")
 
@@ -227,13 +254,13 @@ def main(args: Namespace | None = None) -> int:
         # CONSULT ORACLE
         ################
 
-        console_oracle_start_time = time.time()
+        consult_oracle_start_time = time.time()
 
         oracle_result = consult_oracle(
             pipeline_ctx, align_result, prompt_build_result
         )
 
-        timing.consult_seconds = time.time() - console_oracle_start_time
+        timing.consult_seconds = time.time() - consult_oracle_start_time
 
         if oracle_result.prediction_summary() is not None:
             for summary_message in oracle_result.prediction_summary(return_list=True):
@@ -250,7 +277,7 @@ def main(args: Namespace | None = None) -> int:
 
         timing.refine_seconds = time.time() - refine_alignment_start_time
 
-        success("Refinement stage ending.") # TODO: check success \w cond
+        success("Refinement stage ending.") # success: no exceptions raised
 
 
         # EVALUATE
@@ -262,7 +289,10 @@ def main(args: Namespace | None = None) -> int:
 
         timing.evaluate_seconds = time.time() - evaluate_start_time
 
-        success("Evaluation stage ending.") # TODO: check success \w cond
+        if eval_result.subprocess_failed:
+            critical("Evaluation subprocess failed — run completed with errors")
+        else:
+            success("Evaluation stage ending.")
 
 
         # REPORTING
@@ -276,13 +306,12 @@ def main(args: Namespace | None = None) -> int:
             timing.evaluate_seconds,
         ]
 
-        timing.total_seconds = sum(task_time for task_time in all_task_times if task_time is not None)
-
-        n_consultations = (
-            prompt_build_result.n_prompts
-            if prompt_build_result.n_prompts > 0
-            else 0
+        timing.total_seconds = sum(
+            task_time 
+            for task_time in all_task_times if task_time is not None
         )
+
+        n_consultations = prompt_build_result.n_prompts
 
         print_timing_summary(timing, n_consultations)
 
@@ -307,14 +336,20 @@ def main(args: Namespace | None = None) -> int:
         if refinement_result.n_refined_mappings > 0:
             success(f"Total refined mappings: {refinement_result.n_refined_mappings}")
 
-        success("LogMap-LLM session ending")
+        if eval_result.subprocess_failed:
+            critical("LogMap-LLM session ending (with errors)")
+            exit_code = 1
+        else:
+            success("LogMap-LLM session ending")
+            exit_code = 0
 
 
     finally:
         sys.stdout = tee_branch_out.original_stdout
         tee_branch_out.close()
 
-    return 0
+    return exit_code
+
 
 
 if __name__ == "__main__":

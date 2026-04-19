@@ -351,6 +351,14 @@ class PropertyEntity(OntologyEntity):
             return None
         labels = self.onto.getPreferredLabels(inv)
         return next(iter(labels), None) if labels else str(inv.name)
+    
+    def get_deterministic_inverse_name(self) -> str | None:
+        """Return the label of the inverse property, or None."""
+        inv = getattr(self.prop, 'inverse_property', None)
+        if inv is None:
+            return None
+        labels = self.onto.getPreferredLabels(inv)
+        return min(labels) if labels else str(inv.name)
 
     def __repr__(self) -> str:
         return f"PropertyEntity({self.prop})"
