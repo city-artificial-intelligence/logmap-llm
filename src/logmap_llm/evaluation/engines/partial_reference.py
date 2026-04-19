@@ -57,5 +57,7 @@ class PartialReferenceEvaluationEngine(EvaluationEngine):
 
     def supports(self, metric_name: str) -> bool:
         if metric_name == "stratified_global":
-            return True
+            return False # currently returns False
+            # since we are required to either: from logmap_llm.utils.misc import compute_conference_m1_m2_stratified
+            # or provide an implementation (TODO) for stratefied partial reference alignments (eg. KG track)
         return super().supports(metric_name)

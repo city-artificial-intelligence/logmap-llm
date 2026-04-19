@@ -96,6 +96,7 @@ TRUE_FALSE_PLAIN = (
 
 TRUE_FALSE_STRUCTURED = (
     'Respond with a JSON object containing a single boolean field "answer": {"answer": true} or {"answer": false}.'
+    # 'Respond with true or false'
 )
 
 YES_NO_PLAIN = (
@@ -121,7 +122,6 @@ DEVELOPER_PROMPT_REGISTRY = {
     "conference_class": DEV_PROMPT_CONFERENCE_CLASS,
     "property_equivalence": DEV_PROMPT_PROPERTY_EQUIVALENCE,
     "instance_equivalence": DEV_PROMPT_INSTANCE_EQUIVALENCE,
-    "none": None,
 }
 
 ###

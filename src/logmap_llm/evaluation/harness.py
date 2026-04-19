@@ -392,72 +392,57 @@ def _build_arg_parser() -> argparse.ArgumentParser:
  
  
 
-def _load_toml(config_path: str) -> dict:
-    if sys.version_info >= (3, 11):
-        import tomllib
-    else:
-        try:
-            import tomllib
-        except ImportError:
-            import tomli as tomllib
-    with open(config_path, "rb") as f:
-        return tomllib.load(f)
- 
 
- 
+
 def _run_from_config(args: argparse.Namespace) -> dict:
-    """cannonical invocation mode: load settings from a TOML config file"""
+    """
+    canonical mode for invoking; loads and validate the TOML config via the shared
+    subprocess bootstrap (in logmap_llm.utils.subprocess) and derive paths through 
+    PipelinePaths (single source of truth, shared with the pipeline runner).
+    Dispatches to evaluate_alignment.
+    """
+    from logmap_llm.utils.subprocess import subprocess_bootstrap
+
+    cfg, run_paths, _tee = subprocess_bootstrap("EVALUATE", args=args)
+    eval_cfg = cfg.evaluation
+
+    force_custom = args.no_deeponto or eval_cfg.force_custom_eval
+    partial_ref = args.partial_reference or eval_cfg.partial_reference
+
+    system_path = run_paths.refined_mappings_tsv()
+    oracle_path = run_paths.predictions_csv()
+    initial_align_path = run_paths.logmap_m_ask()
     
-    config = _load_toml(args.config)
- 
-    task_name = config["alignmentTask"]["task_name"]
- 
-    eval_cfg = config.get("evaluation", {})
-    
-    force_custom = args.no_deeponto or eval_cfg.get("force_custom_eval", False)
-    partial_ref = args.partial_reference or eval_cfg.get("partial_reference", False)
-    stratified_entity_type = eval_cfg.get("stratified_by_entity_type", False)
-    stratified_cls_prop = eval_cfg.get("stratified_class_property", False)
- 
-    ref_path = eval_cfg.get("reference_alignment_path", "")
- 
-    outputs = config["outputs"]
-    refined_dir = outputs["logmap_refined_alignment_output_dirpath"]
-    system_path = os.path.join(refined_dir, f"{task_name}-logmap_mappings.tsv")
- 
-    llm_dir = outputs["logmapllm_output_dirpath"]
-    oupt_name = config.get("prompts", {}).get(
-        "cls_usr_prompt_template_name", "synonyms_only"
-    )
-    oracle_path = os.path.join(
-        llm_dir,
-        f"{task_name}-{oupt_name}-mappings_to_ask_with_oracle_predictions.csv",
-    )
-    output_path = args.output or os.path.join(llm_dir, "evaluation_results.json")
- 
-    metrics = [m.strip() for m in args.metrics.split(",")]
- 
+    output_path = Path(args.output) if args.output else run_paths.eval_json()
+
+    metrics = [metric.strip() for metric in args.metrics.split(",")]
+
     return evaluate_alignment(
         system_mappings_path=system_path,
-        reference_path=ref_path,
-        oracle_predictions_path=oracle_path if os.path.exists(oracle_path) else None,
-        train_reference_path=eval_cfg.get("train_alignment_path"),
-        test_cands_path=eval_cfg.get("test_cands_path"),
-        initial_alignment_path=eval_cfg.get("initial_alignment_path"),
-        task_name=task_name,
+        reference_path=eval_cfg.reference_alignment_path or "",
+        oracle_predictions_path=oracle_path if oracle_path.exists() else None,
+        train_reference_path=eval_cfg.train_alignment_path,
+        test_cands_path=eval_cfg.test_cands_path,
+        initial_alignment_path=initial_align_path if initial_align_path.exists() else None,
+        task_name=cfg.alignmentTask.task_name,
         metrics=metrics,
         output_json_path=output_path,
         force_custom=force_custom,
         partial_reference=partial_ref,
-        stratified_by_entity_type=stratified_entity_type,
-        stratified_class_property=stratified_cls_prop,
+        stratified_by_entity_type=eval_cfg.stratified_by_entity_type,
+        stratified_class_property=eval_cfg.stratified_class_property,
     )
- 
 
- 
+
+
 def _run_from_explicit_paths(args: argparse.Namespace) -> dict:
-    """Invocation mode 2: all paths passed on the command line."""
-    metrics = [m.strip() for m in args.metrics.split(",")]
+    """
+    Secondlry invocation mode, where all paths passed explicitly by/via the 
+    command line; this bypasses config loading and the bootstrap helper entirely
+    which results in no cfg object and no subprocess log (but allows more easily
+    testable code -- TODO test suite)
+    """
+    metrics = [metric.strip() for metric in args.metrics.split(",")]
     return evaluate_alignment(
         system_mappings_path=args.system,
         reference_path=args.reference,
@@ -471,26 +456,28 @@ def _run_from_explicit_paths(args: argparse.Namespace) -> dict:
         force_custom=args.no_deeponto,
         partial_reference=args.partial_reference,
     )
- 
- 
+
+
+
 def main() -> None:
     parser = _build_arg_parser()
     args = parser.parse_args()
- 
+    
     if args.config:
         results = _run_from_config(args)
     else:
         results = _run_from_explicit_paths(args)
- 
+
     summary = {
         key: value
         for key, value in results.items()
         if not (isinstance(value, dict) and "false_mappings" in value)
     }
-    
+
     print(json.dumps(summary, indent=2, default=str))
  
- 
+
+
 if __name__ == "__main__":
     main()
  

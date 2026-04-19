@@ -24,7 +24,7 @@ from pathlib import Path
 
 import owlready2
 
-from logmap_llm.utils.logging import info, step, success
+from logmap_llm.utils.logging import info, success
 
 # prefix used for process-private temp directories under /tmp
 _TEMP_DIR_PREFIX = 'logmap-llm-owlcache-'
@@ -34,8 +34,12 @@ _temp_dirs_to_cleanup: list[str] = []
 
 # default canonical cache directory
 DEFAULT_CACHE_DIR = os.path.join(
-    os.environ.get('XDG_CACHE_HOME', os.path.expanduser('~/.cache')),
-    'logmap-llm', 'owlready2',
+    os.environ.get(
+        'XDG_CACHE_HOME', 
+        os.path.expanduser('~/.cache')
+    ),
+    'logmap-llm',
+    'owlready2',
 )
 
 
@@ -99,7 +103,7 @@ def _build_or_wait_for_cache(onto_filepath: str, cache_dir: str) -> Path:
 
     lock_fd = open(lock_path, 'w')
     try:
-        info(f'Acquiring cache lock for {onto_display} ...')
+        info(f'Acquiring cache lock for {onto_display} ...', important=True)
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
 
         if _is_cache_valid(onto_filepath, cache_path):
@@ -108,7 +112,7 @@ def _build_or_wait_for_cache(onto_filepath: str, cache_dir: str) -> Path:
                     f'(built by another process, age: {_format_age(age)})')
             return cache_path
 
-        step(f'Building owlready2 cache for {onto_display} ...')
+        info(f'Building owlready2 cache for {onto_display} ...', important=True)
         build_start = time.time()
 
         temp_fd, temp_build_path = tempfile.mkstemp(suffix='.sqlite3.tmp', dir=cache_dir)
@@ -140,7 +144,7 @@ def _copy_to_private_temp(cache_path: Path) -> str:
     _register_temp_cleanup(temp_dir)
     private_path = os.path.join(temp_dir, cache_path.name)
     shutil.copy2(str(cache_path), private_path)
-    info(f'Working copy: {private_path}')
+    info(f'Working copy: {private_path}', important=True)
     return private_path
 
 

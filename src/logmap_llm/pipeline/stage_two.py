@@ -8,60 +8,61 @@ module, so that filepath resolution occurs consistently across
 both runner.py and this subprocess. Also, see notes in code
 regarding remaining work.
 '''
-import argparse
 import os
 import sys
 import tempfile
-import tomllib
 import pandas as pd
 import json
 
 from functools import partial
-from datetime import datetime, timezone
 
 import logmap_llm.oracle.prompts.templates as opb
 
+from logmap_llm.utils.subprocess import subprocess_bootstrap
+from logmap_llm.ontology.access import load_ontologies
 from logmap_llm.oracle.prompts.templates import (
     set_response_config, 
     set_ontology_domain, 
     get_ontology_domain
 )
-
 from logmap_llm.constants import (
     EntityType,
+    PromptBuildMode,
     M_ASK_COLUMNS,
     PAIRS_SEPARATOR,
     COL_SOURCE_ENTITY_URI,
     COL_TARGET_ENTITY_URI,
+    DEFAULT_MAX_SIBLING_CANDIDATES,
+    DEFAULT_OWLREADY2_CACHE_DIR,
 )
-
-from logmap_llm.utils.logging import (
-    TeeWriter,
-    error,
-    warning,
-    warn,
-    info,
-    success
+from logmap_llm.oracle.prompts.few_shot import (
+    build_few_shot_examples,
 )
-
 from logmap_llm.ontology.sibling_retrieval import (
     SiblingSelector,
     SiblingSelectionStrategy,
 )
-from logmap_llm.constants import (
-    DEFAULT_MAX_SIBLING_CANDIDATES,
+from logmap_llm.utils.logging import (
+    warning,
+    warn,
+    success,
+    step,
+)
+from logmap_llm.config.schema import (
+    PromptTemplateConfig,
 )
 
-from logmap_llm.oracle.prompts.few_shot import build_few_shot_examples
 
+###
+# START: PRIVATE HELPERS
+###
 
-
-def copy_and_coerce_tuple_to_list(xs: tuple) -> list:
+def _copy_and_coerce_tuple_to_list(xs: tuple) -> list:
     return list(xs)
 
 
-def get_m_ask_column_names() -> list[str]:
-    return copy_and_coerce_tuple_to_list(M_ASK_COLUMNS)
+def _get_m_ask_column_names() -> list[str]:
+    return _copy_and_coerce_tuple_to_list(M_ASK_COLUMNS)
 
 
 def _resolve_sibling_strategy(configured_strategy: str | None, ontology_domain: str | None) -> SiblingSelectionStrategy:
@@ -77,16 +78,19 @@ def _resolve_sibling_strategy(configured_strategy: str | None, ontology_domain: 
     return SiblingSelectionStrategy.SBERT
 
 
-def _build_sibling_selector(prompts_cfg: dict) -> SiblingSelector | None:
+def _build_sibling_selector(prompts_cfg: PromptTemplateConfig) -> SiblingSelector | None:
     try:
         strategy = _resolve_sibling_strategy(
-            prompts_cfg.get('sibling_strategy'),
+            prompts_cfg.sibling_strategy,
             get_ontology_domain(),
         )
-        model_override = prompts_cfg.get('sibling_model')
-        max_cands = prompts_cfg.get('sibling_max_candidates') or DEFAULT_MAX_SIBLING_CANDIDATES
+        model_override = prompts_cfg.sibling_model
+        max_cands = prompts_cfg.sibling_max_candidates
         
-        info(f'Initialising SiblingSelector (strategy={strategy.value}, max_candidates={max_cands}) ... ')
+        if max_cands is None:
+            max_cands = DEFAULT_MAX_SIBLING_CANDIDATES
+        
+        step(f'[STEP TWO] Initialising SiblingSelector (strategy={strategy.value}, max_candidates={max_cands}).', important=True)
         
         sel = SiblingSelector(
             strategy=strategy,
@@ -105,280 +109,278 @@ def _build_sibling_selector(prompts_cfg: dict) -> SiblingSelector | None:
             warning(f'Even alphanumeric fallback failed: {inner_e}')
             return None
 
+###
+# END: PRIVATE HELPERS
+###
 
 
 def main():
 
-    parser = argparse.ArgumentParser(
-        description="LogMap-LLM: Prompt Building (subprocess)."
-    )
-    parser.add_argument(
-        "--config", "-c",
-        type=str,
-        required=True,
-        help="Path to the TOML configuration file",
-    )
-    parser.add_argument(
-        "--reuse-align",
-        action="store_true",
-        default=False,
-        help="Override config to reuse existing LogMap alignment.",
-    )
-    parser.add_argument(
-        "--reuse-prompts",
-        action="store_true",
-        default=False,
-        help="Override config to reuse existing prompts. Implies --reuse-align.",
-    )
-    parser.add_argument(
-        "--no-cache",
-        action="store_true",
-        default=False,
-        help="Disable owlready2 quadstore caching (parse ontologies from scratch).",
-    )
-    args = parser.parse_args()
-
     ###
-    # MAIN
-    ###
+    # BOOTSTRAP (THIS SUBPROCESS)
+    #############################
 
+    # CONFIG, PATH & FILESYSTEM MANAGEMENT & LOGGING
+
+    step("[STEP 2] Running PROMPT BUILD as an isolated subprocess ... ")
+    
+    from logmap_llm.pipeline.cli import parse_args
+    args = parse_args()
+
+    config, run_paths, tee = subprocess_bootstrap("PROMPT_BUILD_STAGE_TWO", args=args)
+    
     config_path = args.config
-
-    if not os.path.isfile(config_path):
-        error(f"Configuration file not found: {config_path}")
-        sys.exit(1)
-
-    with open(config_path, mode="rb") as fp:
-        config = tomllib.load(fp)
-
-    # apply CLI overrides (forwarded from parent process)
-    if args.reuse_prompts:
-        config['pipeline']['build_oracle_prompts'] = 'reuse'
-        config['pipeline']['align_ontologies'] = 'reuse'
-    elif args.reuse_align:
-        config['pipeline']['align_ontologies'] = 'reuse'
-
-    info(f"Configuration loaded from: {config_path}")
-
-    # read ontology domain from config
-    ontology_domain = config.get('alignmentTask', {}).get('ontology_domain', None)
     
-    if ontology_domain:
-        info(f"Detected ontology domain, set to: {ontology_domain}")
+    step(f"[STEP 2] Configuration loaded from: {config_path}")
 
-    task_name = config['alignmentTask']['task_name']
-    onto_src_filepath = config['alignmentTask']['onto_source_filepath']
-    onto_tgt_filepath = config['alignmentTask']['onto_target_filepath']
+    initial_mappings_fp = run_paths.logmap_mappings()
+    step(f"[STEP 2] Reading initial alignment mappings from file: {initial_mappings_fp}")
+    mappings = pd.read_csv(initial_mappings_fp, sep=PAIRS_SEPARATOR, header=None)
+    step(f'[STEP 2] Number of mappings in initial alignment: {len(mappings)}')
 
-    logmap_outputs_dir_path = config['outputs']['logmap_initial_alignment_output_dirpath']
+    m_ask_fp = run_paths.logmap_m_ask()
+    m_ask_df = pd.read_csv(m_ask_fp, sep=PAIRS_SEPARATOR, header=None)
+    m_ask_df.columns = _get_m_ask_column_names()
+    step(f'[STEP 2] Loading mappings to ask an Oracle from: {m_ask_fp}')
 
-    ###
-    # Initialise timing and logging
-    ###
-
-    run_timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-
-    # determine output directory for logs and results
-    results_dir = config['outputs']['logmapllm_output_dirpath']
-    os.makedirs(results_dir, exist_ok=True)
-
-    # start logger
-    log_filename = f"pipeline_log_{run_timestamp}.txt"
-    log_filepath = os.path.join(results_dir, log_filename)
-    original_stdout = sys.stdout
-    tee = TeeWriter(log_filepath, original_stdout)
-    sys.stdout = tee
-
-    info(f"Pipeline log file: {log_filepath}")
-    info('Reusing existing initial LogMap alignment ...')
-
-    # NOTE: we should adopt the paths.py (in pipeline) for managing the file paths ...
-    filename = task_name + '-logmap_mappings.txt'
-    filepath = os.path.join(logmap_outputs_dir_path, filename)
-    mappings = pd.read_csv(filepath, sep=PAIRS_SEPARATOR, header=None)
-
-    info(f'Number of mappings in initial alignment: {len(mappings)}')
-
-    filename = task_name + '-logmap_mappings_to_ask_oracle_user_llm.txt'
-
-    print(f'Loading mappings to ask an Oracle from file: {filename}')
-    
-    filepath = os.path.join(logmap_outputs_dir_path, filename)
-
-    # handle empty M_ask (in rare cases LogMap may produce no uncertain mappings)
-    if os.path.getsize(filepath) == 0:
+    # if logmap produces no uncertain mappings, simply exit:
+    if os.path.getsize(m_ask_fp) == 0:
         warning("M_ask file is empty — no uncertain mappings to build prompts for.")
         warning("Exiting Stage 2 subprocess (nothing to do).")
-        sys.stdout = original_stdout
+        sys.stdout = tee.original_stdout
         tee.close()
         sys.exit(0)
-
-    m_ask_df = pd.read_csv(filepath, sep=PAIRS_SEPARATOR, header=None)
-    m_ask_df.columns = get_m_ask_column_names()
-
-    oupt_name = config.get('prompts', {}).get('cls_usr_prompt_template_name', 'synonyms_only')
-    bidirectional_mode = opb.registry.is_bidirectional(oupt_name)
-
-    # apply response configuration to prompt templates
-    # (must happen before any prompt functions are called)
-    answer_format = config.get('oracle', {}).get('answer_format', 'true_false')
-    response_mode = config.get('oracle', {}).get('response_mode', 'structured')
     
-    set_response_config(answer_format, response_mode)
-    
-    info(f'Response config set to: answer_format={answer_format}, response_mode={response_mode}')
 
-    # apply ontology domain qualifier to prompt templates
-    # (must happen before any prompt functions are called)
 
     # NOTE: (this may not be the best of ideas, since we're modifying global state...)
     # this is _okay_ for now, since the ontology_domain doesn't change for a single
     # isolated python process -- well, actually, this subprocess should have its own
     # dedicated `global _ontology_domain`, just be careful when modifying this later ...
 
-    set_ontology_domain(ontology_domain)
-    if ontology_domain:
-        info(f'Ontology domain set to: {get_ontology_domain()}')
+
 
     ###
-    # SIBLING CONTEXT
-    # init SiblingSelector 
-    # (if template requires sibling context)
+    # CONFIGURE RESPONSE FORMAT FOR PROMPTS
+    #######################################
+    # apply response configuration to prompt templates
+    # must happen before any prompt functions are called
+    
+    step(f"[STEP 2] Response config set to: answer_format={config.oracle.answer_format}.")
+    step(f"[STEP 2] Response config set to: response_mode={config.oracle.response_mode}")
+    step(f"[STEP 2] MODIFYING GLOBAL RESPONSE CONFIG STATE FOR TEMPLATES!", important=True)
+    set_response_config(config.oracle.answer_format, config.oracle.response_mode)
+
+
     ###
+    # CONFIGURE ONTOLOGY DOMAIN QUALIFIER
+    #####################################
+    # apply ontology domain qualifier to prompt templates
+    # must happen before any prompt functions are called
+
+    step(f"[STEP 2] Specifying 'ontology_domain' as '{config.alignmentTask.ontology_domain}' ... ", important=True)
+    set_ontology_domain(config.alignmentTask.ontology_domain)
+    if config.alignmentTask.ontology_domain != get_ontology_domain():
+        warning("The 'ontology_domain' specified within the config does not match the global ontology domain state!")
+
+
+    ###
+    # CONFIGURE PROMPT TEMPLATE AND DIRECTION
+    #########################################
+    # obtain the prompt template name, check whether it is
+    # a 'forward only' or a forward+reverse (ie. bidirectional) template
+
+    oupt_name = config.prompts.cls_usr_prompt_template_name
+    bidirectional_mode = opb.registry.is_bidirectional(oupt_name)
+    step(f"[STEP 2] Using prompt template: {oupt_name} (bidirectional={str(bidirectional_mode)}).", important=True)
+
+
+    ###
+    # CONFIGURE SIBLING CONTEXT (IF REQUIRED)
+    #########################################
+    # if the selected template requires sibling-based 
+    # context then initialise the SiblingSelector 
 
     sibling_selector = None
-    prompts_cfg = config.get('prompts', {})
     if opb.registry.requires_siblings(oupt_name):
-        sibling_selector = _build_sibling_selector(prompts_cfg)
+        sibling_selector = _build_sibling_selector(config.prompts)
+    if sibling_selector is not None:
+        step(f"[STEP 2] SiblingSelector has been initialised (using {sibling_selector.__class__.__name__}).")
+
 
     ###
-    # RESOLVE PROPERTY PROMPTS
-    # property prompts are built when the `prop_usr_prompt_template_name`
-    # under [prompts] in the config.toml is set.
-    ###
+    # RESOLVE PROPERTY PROMPT (IF REQUIRED)
+    #######################################
+    # if the user has specified a property prompt template within the config
+    # ie. when `prop_usr_prompt_template_name` is set under [prompts] in config.toml
+    # then we should construct property prompts for use within this experimental run
 
     property_prompt_function = None
-    prop_template_name = config.get('prompts', {}).get('prop_usr_prompt_template_name', None)
+    property_prompt_template_name = config.prompts.prop_usr_prompt_template_name
 
-    if prop_template_name is not None:
+    if property_prompt_template_name is not None:
+        resolved_prop_template_entry = opb.registry.get(property_prompt_template_name)
 
-        resolved_prop_template_entry = opb.registry.get(prop_template_name)
-
-        # TODO: we might look to handle DPROP and OPROPs differently in future
+        # TODO: handle DPROP and OPROPs differently in future
         if resolved_prop_template_entry.entity_type == EntityType.OBJECTPROPERTY:
             property_prompt_function = resolved_prop_template_entry.fn
 
         if property_prompt_function:
-            info(f'Property prompt template: {prop_template_name}')
+            step(f"[STEP 2] Using PROPERTY PROMPT TEMPLATE: {property_prompt_template_name}", important=True)
 
         else:
-            warn(f'Property prompt template "{prop_template_name}" not found — property mappings will be skipped')
+            warning(f"THE PROPERTY PROMPT TEMPLATE '{property_prompt_template_name}' CANNOT BE RESOLVED FROM THE REGISTRY!")
+            warning(f"ARE YOU SURE YOU USED THE CORRECT PROPERTY PROMPT TEMPLATE NAME?!")
+            warning(f"Property mappings will be skipped!")
 
 
     ###
-    # RESOLVE INSTANCE PROMPTS
-    # instance prompt are built when the `inst_usr_prompt_template_name` 
-    # under [prompts] in the config.toml is set 
-    ###
+    # RESOLVE INSTANCE PROMPT (IF REQUIRED)
+    #######################################
+    # if the user has specified an instance prompt template within the config
+    # ie. when `inst_usr_prompt_template_name` is set under [prompts] in config.toml
+    # then we should construct instance prompts for use within this experimental run
 
     instance_prompt_function = None
-    inst_template_name = config.get('prompts', {}).get('inst_usr_prompt_template_name', None)
+    instance_prompt_template_name = config.prompts.inst_usr_prompt_template_name
 
-    if inst_template_name is not None:
-
-        resolved_inst_template_entry = opb.registry.get(inst_template_name)
+    if instance_prompt_template_name is not None:
+        resolved_inst_template_entry = opb.registry.get(instance_prompt_template_name)
 
         if resolved_inst_template_entry.entity_type == EntityType.INSTANCE:
             instance_prompt_function = resolved_inst_template_entry.fn
 
         if instance_prompt_function:
-            info(f'Instance prompt template: {inst_template_name}')
+            step(f"[STEP 2] Using INSTANCE PROMPT TEMPLATE: {instance_prompt_template_name}", important=True)
 
         else:
-            warn(f'Instance prompt template "{inst_template_name}" not found — instance mappings will be skipped')
+            warning(f"THE INSTANCE PROMPT TEMPLATE '{instance_prompt_template_name}' CANNOT BE RESOLVED FROM THE REGISTRY!")
+            warning(f"ARE YOU SURE YOU USED THE CORRECT INSTANCE PROMPT TEMPLATE NAME?!")
+            warning(f"Instance mappings will be skipped!")
 
 
     ###
-    # PROMPT BUILD SETUP
+    # !! END OF BOOTSTRAPPING PROCESS !!
     ###
 
-    info('Building fresh Oracle user prompts ...')
+
+
+    ###
+    # START: PROMPT BUILD
+    #####################
+
+    print()
+
+    step("[STEP 2] STARTING: Building oracle user prompts ... ")
     if bidirectional_mode:
-        print('A bidirectional template is in use. Constructing two prompts per candidate.')
+        step("[STEP 2] (bidirectional mode is set) Constructing two prompts per candidate.")
+
 
     ###
     # LOAD ONTOLOGIES
-    ###
+    #################
 
-    info('Loading ontologies ...')
-    
-    cache_dir = None if args.no_cache else os.path.expanduser('~/.cache/logmap-llm/owlready2')
-    
-    OA_source, OA_target = opb.load_ontologies(
-        onto_src_filepath, onto_tgt_filepath, cache_dir=cache_dir
+    step("[STEP 2] Loading ontologies ... (CHECKING IF OWLREADY2 CACHE EXISTS) ")
+    if args.no_cache:
+        warn("The '--no-cache' flag has been specified, skipping cache check.")
+
+    cache_dir = None if args.no_cache else DEFAULT_OWLREADY2_CACHE_DIR
+
+    OA_source, OA_target = load_ontologies(
+        config.alignmentTask.onto_source_filepath, 
+        config.alignmentTask.onto_target_filepath, 
+        cache_dir=cache_dir,
+        vocabulary=config.alignmentTask.resolved_vocabulary,
     )
-    
-    success('Ontologies loaded.')
+
+    success("LOADED ONTOLOGIES!\n")
+
 
     ###
     # PROMPT CONSTRUCTION
-    ###
+    #####################
+
+    # NOTE: we only support bidirectional_mode for CLS (only) tasks at present (TODO).
 
     if bidirectional_mode:
+        step("[STEP 2] CONSTRUCTING BIDIRECTIONAL TEMPLATES.")
         m_ask_oracle_user_prompts, n_equiv_cands, n_non_equiv_skipped = (
             opb.build_oracle_user_prompts_bidirectional(
-                oupt_name, onto_src_filepath, onto_tgt_filepath, m_ask_df,
+                oupt_name, config.alignmentTask.onto_source_filepath, config.alignmentTask.onto_target_filepath, m_ask_df,
                 OA_source=OA_source, OA_target=OA_target,
                 sibling_selector=sibling_selector
             )
         )
+        step(f"[STEP 2] (n_prompts={str(len(m_ask_oracle_user_prompts))})")
+        step(f"[STEP 2] (n_equiv_cands={str(n_equiv_cands)})")
+        step(f"[STEP 2] (n_non_equiv_skipped={str(n_non_equiv_skipped)})")
+
     else:
+        step("[STEP 2] CONSTRUCTING TEMPLATES.")
         m_ask_oracle_user_prompts = opb.build_oracle_user_prompts(
-            oupt_name, onto_src_filepath, onto_tgt_filepath, m_ask_df,
+            oupt_name, config.alignmentTask.onto_source_filepath, config.alignmentTask.onto_target_filepath, m_ask_df,
             OA_source=OA_source, OA_target=OA_target,
             sibling_selector=sibling_selector,
+            property_prompt_name=property_prompt_template_name,
+            instance_prompt_name=instance_prompt_template_name,
             property_prompt_function=property_prompt_function,
             instance_prompt_function=instance_prompt_function
         )
 
     if m_ask_oracle_user_prompts is not None:
-        info(f"Number of LLM Oracle user prompts obtained: {len(m_ask_oracle_user_prompts)}")
+        step(f"[STEP 2] Number of LLM Oracle user prompts obtained: {len(m_ask_oracle_user_prompts)}", important=True)
 
-    if config['pipeline']['build_oracle_prompts'] == 'build':
-        # save the newly built oracle user prompts to a .json file so they can be reused
-        dirpath = config['outputs']['logmapllm_output_dirpath']
-        filename = task_name + '-' + oupt_name + '-mappings_to_ask_oracle_user_prompts.json'
-        print(f'LLM Oracle user prompts saved to file: {filename}')
-        filepath = os.path.join(dirpath, filename)
-        with open(filepath, 'w') as fp:
+
+    # NOTE: LOGIC HERE IS BACKWARDS. DONT BOTHER DOING ANYTHING IF WE ARE NOT IN BUILD MODE.
+    # IN FACT. THIS SCRIPT WONT EVEN BE CALLED IF PromptBuildMode IS NOT SET TO BUILD!
+    # THIS IS SIMPLY A GUARD? (REALLY NECCESARY?!)
+
+
+    ###
+    # WRITE PROMPTS TO DISK
+    #######################
+
+    step(f"[STEP 2] PromptBuildMode is set to: {config.pipeline.build_oracle_prompts}.")
+
+    if config.pipeline.build_oracle_prompts == PromptBuildMode.BUILD:
+
+        step(f"[STEP 2] Saving prompts to disk ... ")
+
+        prompts_json_fp = run_paths.prompts_json()
+        with open(prompts_json_fp, 'w') as fp:
             json.dump(m_ask_oracle_user_prompts, fp)
 
+        step(f'[STEP 2] LLM Oracle user prompts saved to file: {prompts_json_fp}')
+
+
     ###
-    # FEW-SHOT EXAMPLE BUILDING
+    # !! END OF PROMPT CONSTRUCTION PROCESS FOR CONSULTATION !!
     ###
 
-    few_shot_k = config.get('few_shot', {}).get('few_shot_k', 0)
-    _anchor_tmp_path = None  # track temp file for cleanup
+
+
+    ###
+    # START: FEW-SHOT EXAMPLE BUILDING (IF NECCESARY)
+    ###
+
+    _anchor_tmp_path = None
+    few_shot_k = config.few_shot.few_shot_k
 
     if few_shot_k > 0:
 
-        train_path = config.get('evaluation', {}).get('train_alignment_path', None)
+        # NOTE: why are we looking into 'evaluation' here...?
+        train_path = config.evaluation.train_alignment_path
 
         if train_path is None or not os.path.isfile(str(train_path)):
 
-            ###
-            # No train.tsv available — derive positive examples from LogMap's
-            # high-confidence anchors (initial alignment minus M_ask).
-            ###
+            warn("No train.tsv found - deriving few-shot positives from LogMap high-confidence anchors")
 
-            info("No train.tsv found — deriving few-shot positives from LogMap high-confidence anchors")
-
-            # build M_ask pair set for subtraction
             m_ask_pairs = set()
-            for _, row in m_ask_df.iterrows():
+
+            for _idx, row in m_ask_df.iterrows():
                 m_ask_pairs.add((row[COL_SOURCE_ENTITY_URI], row[COL_TARGET_ENTITY_URI]))
 
-            # Filter initial alignment to anchors not in M_ask. When instance prompts are active, 
+            # Filter initial alignment to anchors not in M_ask. When instance prompts are active,
             # filter to INST entities; otherwise filter to CLS entities (class matching).
             # Mixing entity types with the wrong template would produce incoherent prompts.
             # Initial alignment columns: 0=src, 1=tgt, 2=relation, 3=conf, 4=entityType
@@ -409,12 +411,11 @@ def main():
             else:
                 anchor_entity_type = "CLS"
 
-            info(f"Filtering anchors to {anchor_entity_type} entities")
+            step(f"[STEP 2] Filtering anchors to {anchor_entity_type} entities.")
 
             anchors = []
 
-            for _, row in mappings.iterrows():
-
+            for _idx, row in mappings.iterrows():
                 src, tgt = row.iloc[0], row.iloc[1]
                 entity_type = row.iloc[4] if len(row) > 4 else "CLS"
                 if entity_type != anchor_entity_type:
@@ -423,23 +424,18 @@ def main():
                     anchors.append((src, tgt))
 
             if len(anchors) == 0:
-
-                warn(f"No {anchor_entity_type} anchors available for few-shot examples; falling back to zero-shot")
+                warning(f"No {anchor_entity_type} anchors available for few-shot examples !! falling back to zero-shot !! ")
                 few_shot_k = 0  # prevent downstream build attempt
 
             else:
                 
-                info(f"Anchor pool: {len(anchors)} {anchor_entity_type} pairs (from "
-                     f"{len(mappings)} initial - {len(m_ask_pairs)} M_ask)")
-
-                # write to a temporary TSV that FewShotExampleBuilder can read
+                step(f"[STEP 2] Anchor pool: {len(anchors)} {anchor_entity_type} pairs (from {len(mappings)} initial - {len(m_ask_pairs)} M_ask)")
+                # writes to a temporary TSV that FewShotExampleBuilder can read
                 anchor_fd, anchor_path = tempfile.mkstemp(suffix='.tsv', prefix='anchors_')
                 os.close(anchor_fd)
-
                 with open(anchor_path, 'w') as f:
                     for src, tgt in anchors:
                         f.write(f"{src}\t{tgt}\n")
-
                 _anchor_tmp_path = anchor_path
                 train_path = anchor_path
 
@@ -447,8 +443,7 @@ def main():
 
         if few_shot_k > 0 and train_path is not None:
 
-            info(f'Building {few_shot_k} few-shot examples (strategy:'
-                 f' "{config.get("few_shot", {}).get("few_shot_negative_strategy", "hard")}) ... ')
+            step(f"[STEP 2] Building {few_shot_k} few-shot examples (strategy: {config.few_shot.few_shot_negative_strategy})", important=True)
 
             # get the bound prompt function matching the anchor entity type;
             # if instance prompts are active, use the instance template;
@@ -462,8 +457,8 @@ def main():
                 if sibling_selector is not None and opb.registry.requires_siblings(oupt_name):
                     prompt_function = partial(prompt_function, sibling_selector=sibling_selector)
 
-            few_shot_seed = config.get('few_shot', {}).get('few_shot_seed', 42) # DEFAULT_SEED is 42 :)
-            negative_strategy = config.get('few_shot', {}).get('few_shot_negative_strategy', 'hard')
+            few_shot_seed = config.few_shot.few_shot_seed # default: 42
+            negative_strategy = config.few_shot.few_shot_negative_strategy # default: hard
 
             fs_sibling_selector = sibling_selector
 
@@ -472,15 +467,16 @@ def main():
             # could mutate each others state; however, I need to check if this is how the GIL works
 
             if negative_strategy in ('hard', 'hard-similar') and fs_sibling_selector is None:
-                fs_sibling_selector = _build_sibling_selector(prompts_cfg)
+                fs_sibling_selector = _build_sibling_selector(config.prompts)
                 if fs_sibling_selector is None:
-                    warn('Hard negatives will fall back to random.')
+                    warning('Hard negatives will fall back to random.')
 
             try:
-                ###
-                # Static K-element path (hard / random)
-                ###
-                dirpath = config['outputs']['logmapllm_output_dirpath']
+            
+            ###
+            # Static K-element path (hard / random)
+            #######################################
+
                 examples = build_few_shot_examples(
                     train_path=train_path,
                     OA_source=OA_source,
@@ -492,17 +488,15 @@ def main():
                     negative_strategy=negative_strategy,
                     sibling_selector=fs_sibling_selector,
                     seed=few_shot_seed,
-                    answer_format=answer_format,
-                    response_mode=response_mode,
+                    answer_format=config.oracle.answer_format,
+                    response_mode=config.oracle.response_mode,
                 )
-                # save to JSON
-                fs_filename = task_name + '-' + oupt_name + '-few_shot_examples.json'
-                fs_filepath = os.path.join(dirpath, fs_filename)
-                
-                with open(fs_filepath, 'w') as fp:
+
+                few_shot_examples_json_fp = run_paths.few_shot_json()
+                with open(few_shot_examples_json_fp, 'w') as fp:
                     json.dump(examples, fp)
-                
-                success(f'Saved {len(examples)} few-shot examples to {fs_filename}')
+
+                step(f"[STEP 2] SAVED {len(examples)} few-shot examples to {str(few_shot_examples_json_fp)}")
 
             except Exception as e:
                 warning(f'Few-shot example generation failed: {e}')

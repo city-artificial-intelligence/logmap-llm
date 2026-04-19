@@ -14,6 +14,7 @@ import os
 import subprocess
 import json
 import pandas as pd
+import numpy as np
 
 from logmap_llm.pipeline.context import PipelineContext
 from logmap_llm.pipeline.contracts import (
@@ -24,12 +25,18 @@ from logmap_llm.pipeline.contracts import (
     EvaluationResult,
 )
 from logmap_llm.constants import (
-    PAIRS_SEPARATOR,
     AlignMode,
     PromptBuildMode,
     ConsultMode,
     RefineMode,
     RefinementStrategy,
+    PAIRS_SEPARATOR,
+    COL_SOURCE_ENTITY_URI,
+    COL_TARGET_ENTITY_URI,
+    COL_RELATION,
+    COL_CONFIDENCE,
+    COL_ENTITY_TYPE,
+    DEFAULT_CONFIDENCE_FALLBACK,
 )
 from logmap_llm.utils.data import (
     normalise_prediction_column,
@@ -95,7 +102,28 @@ def _validate_prompt_keys(prompts: dict, bidirectional: bool, template_name: str
 
 
 
-def _kg_refine_in_python(ctx: PipelineContext, oracle_result: OracleResult) -> None:
+def _resolve_accepted_confidences(accepted_subset: pd.DataFrame, oracle_accepted: pd.DataFrame, retain_logprobs_conf: bool) -> np.ndarray | None:
+    """
+    Return logprobs-derived confidences to overwrite LogMap; 
+    or None to keep LogMap confidence.
+    """
+    if not retain_logprobs_conf:
+        return None
+    
+    if COL_CONFIDENCE not in accepted_subset.columns:
+        warn(f"retain_logprobs_conf=True but '{COL_CONFIDENCE}' absent from initial alignment; keeping LogMap confidences.")
+        return None
+    
+    if "Oracle_confidence" not in oracle_accepted.columns:
+        warn("retain_logprobs_conf=True but 'Oracle_confidence' absent from oracle predictions; keeping LogMap confidences.")
+        return None
+    
+    raw = oracle_accepted["Oracle_confidence"].to_numpy()
+    return np.where(np.isfinite(raw), raw, DEFAULT_CONFIDENCE_FALLBACK)
+
+
+
+def _kg_refine_in_python(ctx: PipelineContext, oracle_result: OracleResult, retain_logprobs_conf: bool = False) -> None:
     """
     Produce refined alignment for KG track in Python.
 
@@ -114,15 +142,9 @@ def _kg_refine_in_python(ctx: PipelineContext, oracle_result: OracleResult) -> N
     TODO: _kg_refine_in_python should handle both pipe and tab separators, or use the same format detection 
     logic as evaluate.py (updated note -- 14th April -- can't quite recall what this TODO was for, exactly;
     revisit later).
-    """
-    from logmap_llm.constants import (
-        COL_SOURCE_ENTITY_URI,
-        COL_TARGET_ENTITY_URI,
-        COL_RELATION,
-        COL_CONFIDENCE,
-        COL_ENTITY_TYPE,
-    )
 
+    NOTE: setting retain_logprobs_conf = True will overwrite the LogMap confidence with the LogProbs confidence
+    """
     # load initial alignment
     initial_path = ctx.run_paths.logmap_mappings()
     initial_df = pd.read_csv(initial_path, sep=PAIRS_SEPARATOR, header=None)
@@ -156,15 +178,31 @@ def _kg_refine_in_python(ctx: PipelineContext, oracle_result: OracleResult) -> N
     accepted_subset = oracle_accepted.iloc[:, :ncols].copy()
     accepted_subset.columns = initial_df.columns
 
+    # logprob confidence override (patch April 19th):
+    resolved = _resolve_accepted_confidences(
+        accepted_subset, 
+        oracle_accepted, retain_logprobs_conf
+    )
+    if resolved is not None:
+        accepted_subset[COL_CONFIDENCE] = resolved
+
     refined = pd.concat([retained, accepted_subset], ignore_index=True)
 
     # write to the refined output directory
     output_path = ctx.run_paths.refined_mappings_tsv()
     os.makedirs(ctx.run_paths.refined_dir, exist_ok=True)
     refined.to_csv(output_path, sep='\t', header=False, index=False)
+    conf_source = "logprobs" if resolved is not None else "logmap"
 
     step(f"[Step 4] KG refined alignment: {len(refined)} mappings "
-         f"({len(retained)} retained + {len(accepted_subset)} oracle-accepted)")
+        f"({len(retained)} retained + {len(accepted_subset)} oracle-accepted, "
+        f"accepted-subset confidence source: {conf_source})")
+
+
+###
+# END: PRIVATE HELPERS; START: PIPELINE FNS
+# align -> prompt_build -> consult_oracle -> refine_alignment -> evaluate
+###
 
 
 
@@ -222,7 +260,7 @@ def prompt_build(ctx: PipelineContext, initial_alignment: AlignmentResult) -> Pr
     Step 2: Build user prompts for oracle consultation.
     In BUILD mode, dispatches to pipeline/stage_two.py as a subprocess (isolates JVMs & owlready2).
     """
-    step("[Step 2] Build user prompts for oracle consultation")
+    step("\n[Step 2] Build user prompts for oracle consultation")
 
     match ctx.cfg.pipeline.build_oracle_prompts:
 
@@ -295,11 +333,13 @@ def consult_oracle(ctx: PipelineContext, initial_alignment: AlignmentResult, pro
     import logmap_llm.oracle.prompts.developer as dp
     import logmap_llm.oracle.consultation as oc
 
-    step("[Step 3] Consult Oracle for mappings to ask")
+    step("\n[Step 3] Consult Oracle for mappings to ask")
+    
+    ###
+    # CLS PROMPT
+    ###
 
-    # PROMPT TEMPLATE SWITCHING LOGIC
-    #################################
-    # TODO: neatly rework
+    developer_prompt_map = {}
 
     cls_dev_prompt_text = dp.get_developer_prompt(
         name=ctx.cfg.prompts.cls_dev_prompt_template_name,
@@ -307,7 +347,9 @@ def consult_oracle(ctx: PipelineContext, initial_alignment: AlignmentResult, pro
         response_mode=ctx.cfg.oracle.response_mode,
     )
 
-    developer_prompt_map = {}
+    ###
+    # PROPERTY PROMPT: templates will morph to accomodate both data and object properties
+    ###
 
     prop_dev_prompt_text = None
     if ctx.cfg.prompts.prop_usr_prompt_template_name:
@@ -318,6 +360,10 @@ def consult_oracle(ctx: PipelineContext, initial_alignment: AlignmentResult, pro
         )
         developer_prompt_map["OPROP"] = prop_dev_prompt_text
         developer_prompt_map["DPROP"] = prop_dev_prompt_text
+
+    ###
+    # INSTANCE PROMPT
+    ###
 
     inst_dev_prompt_text = None
     if ctx.cfg.prompts.inst_usr_prompt_template_name:
@@ -331,75 +377,71 @@ def consult_oracle(ctx: PipelineContext, initial_alignment: AlignmentResult, pro
     if len(developer_prompt_map.keys()) == 0:
         developer_prompt_map = None
 
+    ###
+    # SWITCH ON CONSULT MODE (SPECIFIED IN CONFIG)
+    ###
+
     match ctx.cfg.pipeline.consult_oracle:
 
         case ConsultMode.CONSULT:
             
             if prompt_build_result.prompts is None or len(prompt_build_result.prompts) == 0:
-
                 warn("[Step 3] No prompts available — skipping oracle consultation")
-                return OracleResult() 
+                return OracleResult()
             
-            else:
-
-                # FEW-SHOT-HANDLER
-                ##################
-                # TODO: neatly rework
-
-                if ctx.cfg.few_shot.few_shot_k > 0:
-
-                    few_shot_fp = ctx.run_paths.few_shot_json()
-                    
-                    if os.path.isfile(few_shot_fp):
-
-                        with open(few_shot_fp) as fp:
-                            few_shot_examples = [tuple(pair) for pair in json.load(fp)]
-                        success(f"Loaded {len(few_shot_examples)} few-shot examples from {few_shot_fp}")
-
-                    else:
-
-                        warn(f"few_shot_k={ctx.cfg.few_shot.few_shot_k} but examples file not found: {few_shot_fp}")
-                        warn("Falling back to zero-shot")
-                        few_shot_examples = None
-
-                else:
-
-                    few_shot_examples = None
-
-                # END: FEW-SHOT-HANDLER
-
-                oracle_kwargs = dict(
-                    m_ask_prompts=prompt_build_result.prompts,
-                    m_ask_init_alignment_df=initial_alignment.m_ask_df,
-                    oracle_cfg=ctx.cfg.oracle,
-                    developer_prompt_text=cls_dev_prompt_text,
-                    developer_prompt_map=developer_prompt_map,
-                    few_shot_examples=few_shot_examples,
-                    **ctx.cfg.oracle.consult_kwargs,
-                )
+            # else: check few-shot configuration
+            few_shot_examples = None
+            if ctx.cfg.few_shot.few_shot_k > 0:
+                few_shot_fp = ctx.run_paths.few_shot_json()
                 
-                if prompt_build_result.bidirectional:
-                    step(f"[Step 3] Consulting LLM oracle (bidirectional) with model: {ctx.cfg.oracle.model_name}")
-                    oracle_predictions_df = oc.consult_oracle_bidirectional(**oracle_kwargs)
-                else:
-                    step(f"[Step 3] Consulting LLM oracle with model: {ctx.cfg.oracle.model_name}")
-                    oracle_predictions_df = oc.consult_oracle_for_mappings_to_ask(**oracle_kwargs)
+                if os.path.isfile(few_shot_fp):
+                    with open(few_shot_fp) as fp:
+                        few_shot_examples = [tuple(pair) for pair in json.load(fp)]
+                    success(f"Loaded {len(few_shot_examples)} few-shot examples from {few_shot_fp}")
+                
+                else: # failed to find few-shot file
+                    warn(f"few_shot_k={ctx.cfg.few_shot.few_shot_k} but examples file not found: {few_shot_fp}")
+                    warn("Falling back to zero-shot")
+                    few_shot_examples = None
+                
+            # END: FEW-SHOT-HANDLER
 
-                oracle_result = OracleResult(
-                    predictions=oracle_predictions_df,
-                    oracle_params=oracle_kwargs,
-                    bidirectional=prompt_build_result.bidirectional,
-                )
-                oracle_result.predictions.to_csv(
-                    ctx.run_paths.predictions_csv(), na_rep="nan"
-                ) # ensure round-trip-ability under pd.read_csv^
-                return oracle_result
+            ###
+            # EXECUTE CONSULTATION
+            ###
+
+            oracle_kwargs = dict(
+                m_ask_prompts=prompt_build_result.prompts,
+                m_ask_init_alignment_df=initial_alignment.m_ask_df,
+                oracle_cfg=ctx.cfg.oracle,
+                developer_prompt_text=cls_dev_prompt_text,
+                developer_prompt_map=developer_prompt_map,
+                few_shot_examples=few_shot_examples,
+                **ctx.cfg.oracle.consult_kwargs,
+            )
+            
+            if prompt_build_result.bidirectional:
+                step(f"[Step 3] Consulting LLM oracle (bidirectional) with model: {ctx.cfg.oracle.model_name}")
+                oracle_predictions_df = oc.consult_oracle_bidirectional(**oracle_kwargs)
+            else:
+                step(f"[Step 3] Consulting LLM oracle with model: {ctx.cfg.oracle.model_name}")
+                oracle_predictions_df = oc.consult_oracle_for_mappings_to_ask(**oracle_kwargs)
+
+            oracle_result = OracleResult(
+                predictions=oracle_predictions_df,
+                oracle_params=oracle_kwargs,
+                bidirectional=prompt_build_result.bidirectional,
+            )
+            oracle_result.predictions.to_csv(
+                ctx.run_paths.predictions_csv(), na_rep="nan"
+            ) # ensure round-trip-ability under pd.read_csv^
+            return oracle_result
 
         case ConsultMode.REUSE:
 
             step(f"[Step 3] Loading LLM oracle predictions from: {ctx.run_paths.predictions_csv()}")
             predictions_df = pd.read_csv(ctx.run_paths.predictions_csv())
-            normalise_prediction_column(predictions_df) # pred.str_T/F/Y/N -> bool
+            predictions_df = normalise_prediction_column(predictions_df) # pred.str_T/F/Y/N -> bool
             return OracleResult(predictions=predictions_df)
 
         case ConsultMode.LOCAL:
@@ -428,7 +470,7 @@ def refine_alignment(ctx: PipelineContext, oracle_result: OracleResult) -> Refin
     """
     import logmap_llm.bridging as br
 
-    step("[Step 4] Refine alignment using oracle mapping predictions")
+    step("\n[Step 4] Refine alignment using oracle mapping predictions")
 
     ctx.logmap.set_output_dir(ctx.run_paths.refined_dir)
 
@@ -530,7 +572,7 @@ def evaluate(ctx) -> EvaluationResult:
          that use the CustomEvaluationEngine -- worth noting)
     Note: Evaluation can be skipped by setting 'evaluate = false' under '[evaluation]' in config.toml
     """
-    step("[Step 5] Evaluation")
+    step("\n[Step 5] Evaluation")
 
     if not ctx.cfg.evaluation.evaluate:
         warn("Evaluation disabled in config")
@@ -538,7 +580,7 @@ def evaluate(ctx) -> EvaluationResult:
 
     if not ctx.config_path:
         warning("No config path available for evaluation subprocess")
-        return EvaluationResult()
+        return EvaluationResult(subprocess_failed=True)
 
     cmd = [
         sys.executable, "-m", "logmap_llm.evaluation.harness",
@@ -548,8 +590,10 @@ def evaluate(ctx) -> EvaluationResult:
     step("[Step 5] Running evaluation subprocess")
     
     proc = subprocess.run(cmd, capture_output=False)
-
-    if proc.returncode != 0:
+    
+    subprocess_failed = proc.returncode != 0
+    
+    if subprocess_failed:
         warning(f"Evaluation subprocess exited with code {proc.returncode}")
 
     eval_results_path = os.path.join(
@@ -557,11 +601,14 @@ def evaluate(ctx) -> EvaluationResult:
         "evaluation_results.json",
     )
     
-    if os.path.exists(eval_results_path):
+    # only trust the results file if the subprocess succeeded
+    if not subprocess_failed and os.path.exists(eval_results_path):
         with open(eval_results_path) as fp:
             results_dict = json.load(fp)
-        
+
         success(f"Evaluation results loaded from: {eval_results_path}")
         return EvaluationResult(results=results_dict)
+    
+    # else: we might have stale results (from a previous run)
+    return EvaluationResult(subprocess_failed=subprocess_failed)
 
-    return EvaluationResult()

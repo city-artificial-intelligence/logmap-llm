@@ -287,7 +287,8 @@ class SiblingSelector:
             debug(f"(select_siblings) max_candidates set to {str(cap)} and max_count set to {str(max_count)}.")
 
         # cls -> direct parent/s -> unionised children
-        siblings = list(_gather_siblings(entity))
+        # siblings = list(_gather_siblings(entity)) # PREVIOUSLY NON DETERMINISTIC (# Fix:)
+        siblings = sorted(_gather_siblings(entity), key=_get_label)
         if not siblings:
             return []
         if len(siblings) > cap:

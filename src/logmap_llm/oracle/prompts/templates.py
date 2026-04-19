@@ -11,12 +11,10 @@ from typing import Callable
 
 from logmap_llm.ontology.object import OntologyEntryAttr, ClassNotFoundError, resolve_entity
 from logmap_llm.ontology.sibling_retrieval import SiblingSelector, _get_label
-from logmap_llm.ontology.access import OntologyAccess
-from logmap_llm.ontology.cache import OntologyCache
-from logmap_llm.utils.logging import step, success
+from logmap_llm.utils.logging import info, debug, warn, warning
 from logmap_llm.oracle.prompts.formatting import (
     format_hierarchy,
-    get_single_name,
+    get_deterministic_single_name,
     select_best_direct_entity_names,
     select_best_direct_entity_names_with_synonyms,
     select_best_sequential_hierarchy_with_synonyms,
@@ -29,6 +27,7 @@ from logmap_llm.oracle.prompts.formatting import (
     format_instance_type_clause,
     format_instance_attribute_clause,
     select_intersecting_properties,
+    get_deterministic_single_name,
 )
 from logmap_llm.constants import (
     EntityType,
@@ -40,8 +39,6 @@ from logmap_llm.constants import (
     RESPONSE_MODES,
     VERBOSE,
 )
-
-
 from tqdm import tqdm
 
 ###
@@ -257,14 +254,41 @@ registry = TemplateRegistry()
 # HELPERS (FUNCTIONS)
 ###
 
-def _retrieve_siblings(entity, sibling_selector: SiblingSelector=None, max_count=2):
+def _retrieve_siblings(entity, sibling_selector: SiblingSelector=None, max_count=2) -> list[str] | list[tuple[str, float]]:
+    """
+    NOTE: `_retrieve_siblings` has an odd return type. This is accounted for in the downstream
+    consumer (ie. `format_sibling_context` in 'formatting.py'); if the sibling_selector is not none,
+    then a list of labels are returned, whereas the fallthrough returns a list of tuples with scores.
+    Nothing should break if we modify the first return statement to:
+    
+        return [
+            (
+                _get_label(sibling), 
+                _score
+            ) 
+            for sibling, _score in ranked
+        ]
+    
+    Then, the return type can be only `list[tuple[str, float]]` and it should have no effect on the
+    existing consumers. I've made the change, everything appears to continue working. Thoughts?
+    """
     if sibling_selector is not None:
         # map sibling_selector.select_siblings(...) -> preferred labels 
         # ... (required by prompt template consumers; also list comprehension is more pythonic!)
         ranked = sibling_selector.select_siblings(entity, max_count=max_count)
+        
+        # (previous) return statement:
+        # return [
+        #     _get_label(sibling) for sibling, _score in ranked
+        # ]
+        
         return [
-            _get_label(sibling) for sibling, _score in ranked
+            (
+                _get_label(sibling), 
+                score
+            ) for sibling, score in ranked
         ]
+    
     # else:
     sib_entries = entity.get_siblings(max_count=max_count)
     return [
@@ -743,7 +767,8 @@ def oupt_deductive_equiv(src_entity, tgt_entity):
         facts.append(f'- "{tgt_entity_names}" is also known as ' + " and ".join(f'"{s}"' for s in tgt_synonyms) + ' (Ontology 2)')
     
     return "\n".join([
-        f"We have two entities from different {_ontology_domain} ontologies. Consider the following facts:",
+        get_domain_preamble(),
+        "Consider the following facts:",
         "\n".join(facts),
         f'\nGiven these facts, can you conclude that "{src_entity_names}" (Ontology 1) and "{tgt_entity_names}" (Ontology 2) refer to the same real-world concept? {_response_instruction}',
     ])
@@ -804,6 +829,7 @@ def oupt_equiv_parents_siblings(src_entity, tgt_entity, sibling_selector=None):
     ])
 
 
+
 @registry.register("equiv_parents_synonyms_siblings", requires_siblings=True)
 def oupt_equiv_parents_synonyms_siblings(src_entity, tgt_entity, sibling_selector=None):
     src_parent, tgt_parent, src_entity_names, tgt_entity_names, src_synonyms, tgt_synonyms = select_best_direct_entity_names_with_synonyms(src_entity, tgt_entity)
@@ -831,76 +857,100 @@ def oupt_equiv_parents_synonyms_siblings(src_entity, tgt_entity, sibling_selecto
 
 ###
 # PROPERTY TEMPLATES (OBJECTPROPERTY) -- EntityType.OBJECTPROPERTY
-#
-# TODO: !! UPDATE THE READABILITY OF THESE TEMPLATES !!
-## TODO (2): USE --> get_domain_preamble(), <-- 
 ###
+
 
 
 @registry.register("prop_labels_only", entity_type=EntityType.OBJECTPROPERTY)
 def oupt_prop_labels_only(src_prop, tgt_prop):
-    src_name = get_single_name(src_prop.get_preferred_names()) or str(src_prop.prop.name)
-    tgt_name = get_single_name(tgt_prop.get_preferred_names()) or str(tgt_prop.prop.name)
+    src_name = get_deterministic_single_name(src_prop.get_preferred_names()) or str(src_prop.prop.name)
+    tgt_name = get_deterministic_single_name(tgt_prop.get_preferred_names()) or str(tgt_prop.prop.name)
+    
     prompt_lines = [
-        f'We have two properties from different ontologies.',
+        get_domain_preamble(),
         f'The first property is "{src_name}".',
         f'The second property is "{tgt_name}".',
         f'Do these properties represent the same relationship? {_response_instruction}',
     ]
+    
     return "\n".join(prompt_lines)
 
 
 
-# TODO: !! UPDATE THE READABILITY OF THESE TEMPLATES !!
-## TODO (2): USE --> get_domain_preamble(), <-- 
-
 @registry.register("prop_domain_range", entity_type=EntityType.OBJECTPROPERTY)
 def oupt_prop_domain_range(src_prop, tgt_prop):
-    src_name = get_single_name(src_prop.get_preferred_names()) or str(src_prop.prop.name)
-    tgt_name = get_single_name(tgt_prop.get_preferred_names()) or str(tgt_prop.prop.name)
+    src_name = get_deterministic_single_name(src_prop.get_preferred_names()) or str(src_prop.prop.name)
+    tgt_name = get_deterministic_single_name(tgt_prop.get_preferred_names()) or str(tgt_prop.prop.name)
+    
     src_desc = format_domain_range_clause(src_name, src_prop.get_domain_names(), src_prop.get_range_names())
     tgt_desc = format_domain_range_clause(tgt_name, tgt_prop.get_domain_names(), tgt_prop.get_range_names())
-    return f'We have two properties from different ontologies.\n\nThe first property is {src_desc}.\n\nThe second property is {tgt_desc}.\n\nDo these properties represent the same relationship?\n\n{_response_instruction}'
+    
+    prompt_lines = [
+        get_domain_preamble(),
+        f'The first property is "{src_desc}".',
+        f'The second property is "{tgt_desc}".',
+        f'Do these properties represent the same relationship? {_response_instruction}'
+    ]
+
+    return "\n".join(prompt_lines)
 
 
-
-# TODO: !! UPDATE THE READABILITY OF THESE TEMPLATES !!
-## TODO (2): USE --> get_domain_preamble(), <-- 
 
 @registry.register("prop_domain_range_synonyms", entity_type=EntityType.OBJECTPROPERTY)
 def oupt_prop_domain_range_synonyms(src_prop, tgt_prop):
-    src_name = get_single_name(src_prop.get_preferred_names()) or str(src_prop.prop.name)
-    tgt_name = get_single_name(tgt_prop.get_preferred_names()) or str(tgt_prop.prop.name)
+    src_name = get_deterministic_single_name(src_prop.get_preferred_names()) or str(src_prop.prop.name)
+    tgt_name = get_deterministic_single_name(tgt_prop.get_preferred_names()) or str(tgt_prop.prop.name)
+    
     src_syn_text = format_synonyms_parenthetical(src_prop.get_synonyms(), src_name)
     tgt_syn_text = format_synonyms_parenthetical(tgt_prop.get_synonyms(), tgt_name)
+    
     src_line = f'The first property is "{src_name}"{src_syn_text}'
     tgt_line = f'The second property is "{tgt_name}"{tgt_syn_text}'
+    
     if src_prop.get_domain_names() or src_prop.get_range_names():
         src_dr = format_domain_range_clause(src_name, src_prop.get_domain_names(), src_prop.get_range_names(), domain_synonyms=src_prop.get_domain_synonyms(), range_synonyms=src_prop.get_range_synonyms(), include_synonyms=True)
         src_line += src_dr[len(f'"{src_name}"'):]
+    
     if tgt_prop.get_domain_names() or tgt_prop.get_range_names():
         tgt_dr = format_domain_range_clause(tgt_name, tgt_prop.get_domain_names(), tgt_prop.get_range_names(), domain_synonyms=tgt_prop.get_domain_synonyms(), range_synonyms=tgt_prop.get_range_synonyms(), include_synonyms=True)
         tgt_line += tgt_dr[len(f'"{tgt_name}"'):]
-    return f'We have two properties from different ontologies.\n\n{src_line}.\n\n{tgt_line}.\n\nDo these properties represent the same relationship?\n\n{_response_instruction}'
+    
+    prompt_lines = [
+        get_domain_preamble(),
+        f'{src_line}',
+        f'{tgt_line}',
+        f'Do these properties represent the same relationship? {_response_instruction}'
+    ]
+
+    return "\n".join(prompt_lines)
 
 
-
-# TODO: !! UPDATE THE READABILITY OF THESE TEMPLATES !!
-## TODO (2): USE --> get_domain_preamble(), <-- 
 
 @registry.register("prop_with_inverse_and_chars", entity_type=EntityType.OBJECTPROPERTY)
 def oupt_prop_with_inverse_and_chars(src_prop, tgt_prop):
-    src_name = get_single_name(src_prop.get_preferred_names()) or str(src_prop.prop.name)
-    tgt_name = get_single_name(tgt_prop.get_preferred_names()) or str(tgt_prop.prop.name)
+    src_name = get_deterministic_single_name(src_prop.get_preferred_names()) or str(src_prop.prop.name)
+    tgt_name = get_deterministic_single_name(tgt_prop.get_preferred_names()) or str(tgt_prop.prop.name)
+
     src_desc = format_domain_range_clause(src_name, src_prop.get_domain_names(), src_prop.get_range_names())
     tgt_desc = format_domain_range_clause(tgt_name, tgt_prop.get_domain_names(), tgt_prop.get_range_names())
+
     src_chars = src_prop.get_characteristics()
-    src_inverse = src_prop.get_inverse_name()
+    src_inverse = src_prop.get_deterministic_inverse_name()
+
     tgt_chars = tgt_prop.get_characteristics()
-    tgt_inverse = tgt_prop.get_inverse_name()
+    tgt_inverse = tgt_prop.get_deterministic_inverse_name()
+
     src_char_text = " " + format_property_characteristics(src_chars, src_inverse) if (src_chars or src_inverse) else ""
     tgt_char_text = " " + format_property_characteristics(tgt_chars, tgt_inverse) if (tgt_chars or tgt_inverse) else ""
-    return f'We have two properties from different ontologies.\n\nThe first property is {src_desc}.{src_char_text}\n\nThe second property is {tgt_desc}.{tgt_char_text}\n\nDo these properties represent the same relationship?\n\nRespond with "True" or "False".'
+
+    prompt_lines = [
+        get_domain_preamble(),
+        f'The first property is {src_desc}.{src_char_text}',
+        f'The second property is {tgt_desc}.{tgt_char_text}',
+        f'Do these properties represent the same relationship? {_response_instruction}'
+    ]
+
+    return "\n".join(prompt_lines)
 
 
 
@@ -910,35 +960,51 @@ def oupt_prop_with_inverse_and_chars(src_prop, tgt_prop):
 
 
 
-# TODO: !! UPDATE THE READABILITY OF THESE TEMPLATES !!
-## TODO (2): USE --> get_domain_preamble(), <-- 
-
 @registry.register("class_with_restrictions")
 def oupt_class_with_restrictions(src_entity, tgt_entity):
     _, _, src_name, tgt_name, src_syns, tgt_syns = select_best_direct_entity_names_with_synonyms(src_entity, tgt_entity)
+
     src_syn_text = (", also known as " + ", ".join(f'"{s}"' for s in src_syns)) if src_syns else ""
     tgt_syn_text = (", also known as " + ", ".join(f'"{s}"' for s in tgt_syns)) if tgt_syns else ""
+
     src_restrictions = src_entity.get_restrictions()
     tgt_restrictions = tgt_entity.get_restrictions()
+
     src_restr_text = " " + format_restriction_context(src_restrictions) if src_restrictions else ""
     tgt_restr_text = " " + format_restriction_context(tgt_restrictions) if tgt_restrictions else ""
-    return f'We have two entities from different ontologies.\nThe first one is "{src_name}"{src_syn_text}.{src_restr_text}\nThe second one is "{tgt_name}"{tgt_syn_text}.{tgt_restr_text}\n\nDo they mean the same thing? Respond with "True" or "False".'
+
+    prompt_lines = [
+        get_domain_preamble(),
+        f'The first one is "{src_name}"{src_syn_text}.{src_restr_text}',
+        f'The second one is "{tgt_name}"{tgt_syn_text}.{tgt_restr_text}',
+        f'Do they mean the same thing? {_response_instruction}',
+    ]
+
+    return "\n".join(prompt_lines)
 
 
-
-# TODO: !! UPDATE THE READABILITY OF THESE TEMPLATES !!
-## TODO (2): USE --> get_domain_preamble(), <-- 
 
 @registry.register("class_role_signature")
 def oupt_class_role_signature(src_entity, tgt_entity):
     _, _, src_name, tgt_name, src_syns, tgt_syns = select_best_direct_entity_names_with_synonyms(src_entity, tgt_entity)
+
     src_syn_text = (", also known as " + ", ".join(f'"{s}"' for s in src_syns)) if src_syns else ""
     tgt_syn_text = (", also known as " + ", ".join(f'"{s}"' for s in tgt_syns)) if tgt_syns else ""
+
     src_sig = src_entity.get_relational_signature()
     tgt_sig = tgt_entity.get_relational_signature()
+
     src_sig_text = " " + format_relational_signature(src_sig) if (src_sig.get('as_domain') or src_sig.get('as_range')) else ""
     tgt_sig_text = " " + format_relational_signature(tgt_sig) if (tgt_sig.get('as_domain') or tgt_sig.get('as_range')) else ""
-    return f'We have two entities from different ontologies.\nThe first one is "{src_name}"{src_syn_text}.{src_sig_text}\nThe second one is "{tgt_name}"{tgt_syn_text}.{tgt_sig_text}\n\nDo they mean the same thing? Respond with "True" or "False".'
+
+    prompt_lines = [
+        get_domain_preamble(),
+        f'The first one is "{src_name}"{src_syn_text}.{src_sig_text}',
+        f'The second one is "{tgt_name}"{tgt_syn_text}.{tgt_sig_text}',
+        f'Do they mean the same thing? {_response_instruction}'
+    ]
+
+    return "\n".join(prompt_lines)
 
 
 
@@ -948,148 +1014,258 @@ def oupt_class_role_signature(src_entity, tgt_entity):
 
 
 
-# TODO: !! UPDATE THE READABILITY OF THESE TEMPLATES !!
-## TODO (2): USE --> get_domain_preamble(), <-- 
-
 @registry.register("inst_labels_only", entity_type=EntityType.INSTANCE)
 def oupt_inst_labels_only(src_inst, tgt_inst):
-    src_label = get_single_name(src_inst.get_preferred_names()) or src_inst.uri
-    tgt_label = get_single_name(tgt_inst.get_preferred_names()) or tgt_inst.uri
-    return f'We have two entities from different knowledge graphs.\n\nThe first is "{src_label}".\n\nThe second is "{tgt_label}".\n\nDo these refer to the same entity?\n\n{_response_instruction}'
+    src_label = get_deterministic_single_name(src_inst.get_preferred_names()) or src_inst.uri
+    tgt_label = get_deterministic_single_name(tgt_inst.get_preferred_names()) or tgt_inst.uri
+
+    prompt_lines = [
+        get_domain_preamble(),
+        f'The first is "{src_label}".',
+        f'The second is "{tgt_label}"',
+        f'Do these refer to the same entity? {_response_instruction}'
+    ]
+
+    return "\n".join(prompt_lines)
 
 
-
-# TODO: !! UPDATE THE READABILITY OF THESE TEMPLATES !!
-## TODO (2): USE --> get_domain_preamble(), <-- 
 
 @registry.register("inst_labels_with_types", entity_type=EntityType.INSTANCE)
 def oupt_inst_labels_with_types(src_inst, tgt_inst):
-    src_label = get_single_name(src_inst.get_preferred_names()) or src_inst.uri
-    tgt_label = get_single_name(tgt_inst.get_preferred_names()) or tgt_inst.uri
+    src_label = get_deterministic_single_name(src_inst.get_preferred_names()) or src_inst.uri
+    tgt_label = get_deterministic_single_name(tgt_inst.get_preferred_names()) or tgt_inst.uri
+
     src_type_clause = format_instance_type_clause(src_inst.get_type_names())
     tgt_type_clause = format_instance_type_clause(tgt_inst.get_type_names())
+
     src_desc = f'"{src_label}"' + (f', {src_type_clause}' if src_type_clause else "")
     tgt_desc = f'"{tgt_label}"' + (f', {tgt_type_clause}' if tgt_type_clause else "")
-    return f'We have two entities from different knowledge graphs.\n\nThe first is {src_desc}.\n\nThe second is {tgt_desc}.\n\nDo these refer to the same entity?\n\n{_response_instruction}'
+
+    prompt_lines = [
+        get_domain_preamble(),
+        f'The first is {src_desc}.',
+        f'The second is {tgt_desc}.',
+        f'Do these refer to the same entity? {_response_instruction}'
+    ]
+
+    return "\n".join(prompt_lines)
 
 
 
-# TODO: !! UPDATE THE READABILITY OF THESE TEMPLATES !!
-## TODO (2): USE --> get_domain_preamble(), <-- 
 
 @registry.register("inst_types_and_attributes", entity_type=EntityType.INSTANCE)
 def oupt_inst_types_and_attributes(src_inst, tgt_inst, max_properties=3, fmt_fn=None):
-    if fmt_fn is None: fmt_fn = _global_fmt_fn
-    src_label = get_single_name(src_inst.get_preferred_names()) or src_inst.uri
-    tgt_label = get_single_name(tgt_inst.get_preferred_names()) or tgt_inst.uri
+    if fmt_fn is None: 
+        fmt_fn = _global_fmt_fn
+    
+    src_label = get_deterministic_single_name(src_inst.get_preferred_names()) or src_inst.uri
+    tgt_label = get_deterministic_single_name(tgt_inst.get_preferred_names()) or tgt_inst.uri
+    
     src_type_clause = format_instance_type_clause(src_inst.get_type_names())
     tgt_type_clause = format_instance_type_clause(tgt_inst.get_type_names())
+    
     src_selected, tgt_selected = select_intersecting_properties(src_inst.get_all_properties(), tgt_inst.get_all_properties(), max_properties=max_properties)
+    
     src_attr = fmt_fn(src_selected, max_properties)
     tgt_attr = fmt_fn(tgt_selected, max_properties)
+    
     src_desc = f'"{src_label}"' + (f', {src_type_clause}' if src_type_clause else "") + (f' and {src_attr}' if src_attr else "")
     tgt_desc = f'"{tgt_label}"' + (f', {tgt_type_clause}' if tgt_type_clause else "") + (f' and {tgt_attr}' if tgt_attr else "")
-    return f'We have two entities from different knowledge graphs.\n\nThe first is {src_desc}.\n\nThe second is {tgt_desc}.\n\nDo these refer to the same entity?\n\n{_response_instruction}'
+    
+    prompt_lines = [
+        get_domain_preamble(),
+        f'The first is {src_desc}.',
+        f'The second is {tgt_desc}.',
+        f'Do these refer to the same entity? {_response_instruction}'
+    ]
+    
+    return "\n".join(prompt_lines)
 
 
 
-# TODO: !! UPDATE THE READABILITY OF THESE TEMPLATES !!
-## TODO (2): USE --> get_domain_preamble(), <-- 
 
 @registry.register("inst_full_context", entity_type=EntityType.INSTANCE)
 def oupt_inst_full_context(src_inst, tgt_inst, max_properties=3, fmt_fn=None):
-    if fmt_fn is None: fmt_fn = _global_fmt_fn
-    src_label = get_single_name(src_inst.get_preferred_names()) or src_inst.uri
-    tgt_label = get_single_name(tgt_inst.get_preferred_names()) or tgt_inst.uri
+    if fmt_fn is None: 
+        fmt_fn = _global_fmt_fn
+    
+    src_label = get_deterministic_single_name(src_inst.get_preferred_names()) or src_inst.uri
+    tgt_label = get_deterministic_single_name(tgt_inst.get_preferred_names()) or tgt_inst.uri
+    
     src_type_clause = format_instance_type_clause(src_inst.get_type_names())
     tgt_type_clause = format_instance_type_clause(tgt_inst.get_type_names())
+    
     src_data_sel, tgt_data_sel = select_intersecting_properties(src_inst.get_data_properties(), tgt_inst.get_data_properties(), max_properties=max_properties)
     src_obj_sel, tgt_obj_sel = select_intersecting_properties(src_inst.get_object_properties(), tgt_inst.get_object_properties(), max_properties=max_properties)
-    def _build(label, tc, dc, oc):
-        d = f'"{label}"' + (f', {tc}' if tc else "") + (f' and has attributes: {dc}' if dc else "") + (f' and has relationships: {oc}' if oc else "")
-        return d
+    
+    def _build(label, type_clause, data_clause, object_clause):
+        built_description = (
+            f'"{label}"' + (f', {type_clause}' if type_clause else "") 
+            + (f' and has attributes: {data_clause}' if data_clause else "") 
+            + (f' and has relationships: {object_clause}' if object_clause else "")
+        )
+        return built_description
+    
     src_desc = _build(src_label, src_type_clause, fmt_fn(src_data_sel, max_properties), fmt_fn(src_obj_sel, max_properties))
     tgt_desc = _build(tgt_label, tgt_type_clause, fmt_fn(tgt_data_sel, max_properties), fmt_fn(tgt_obj_sel, max_properties))
-    return f'We have two entities from different knowledge graphs.\n\nThe first is {src_desc}.\n\nThe second is {tgt_desc}.\n\nDo these refer to the same entity?\n\n{_response_instruction}'
+    
+    prompt_lines = [
+        get_domain_preamble(),
+        f'The first is {src_desc}.',
+        f'The second is {tgt_desc}.',
+        f'Do these refer to the same entity? {_response_instruction}'
+    ]
+    
+    return "\n".join(prompt_lines)
 
 
-
-# TODO: !! UPDATE THE READABILITY OF THESE TEMPLATES !!
-## TODO (2): USE --> get_domain_preamble(), <-- 
 
 @registry.register("inst_types_and_attributes_intersect", entity_type=EntityType.INSTANCE)
 def oupt_inst_types_and_attributes_intersect(src_inst, tgt_inst, max_properties=3, fmt_fn=None):
-    if fmt_fn is None: fmt_fn = _global_fmt_fn
-    src_label = get_single_name(src_inst.get_preferred_names()) or src_inst.uri
-    tgt_label = get_single_name(tgt_inst.get_preferred_names()) or tgt_inst.uri
+    if fmt_fn is None: 
+        fmt_fn = _global_fmt_fn
+    
+    src_label = get_deterministic_single_name(src_inst.get_preferred_names()) or src_inst.uri
+    tgt_label = get_deterministic_single_name(tgt_inst.get_preferred_names()) or tgt_inst.uri
+    
     src_type_clause = format_instance_type_clause(src_inst.get_type_names())
     tgt_type_clause = format_instance_type_clause(tgt_inst.get_type_names())
+    
     src_selected, tgt_selected = select_intersecting_properties(src_inst.get_all_properties(), tgt_inst.get_all_properties(), max_properties=max_properties, intersection_only=True)
+    
     src_attr = fmt_fn(src_selected, max_properties)
     tgt_attr = fmt_fn(tgt_selected, max_properties)
+    
     src_desc = f'"{src_label}"' + (f', {src_type_clause}' if src_type_clause else "") + (f' and {src_attr}' if src_attr else "")
     tgt_desc = f'"{tgt_label}"' + (f', {tgt_type_clause}' if tgt_type_clause else "") + (f' and {tgt_attr}' if tgt_attr else "")
-    return f'We have two entities from different knowledge graphs.\n\nThe first is {src_desc}.\n\nThe second is {tgt_desc}.\n\nDo these refer to the same entity?\n\n{_response_instruction}'
+    
+    prompt_lines = [
+        get_domain_preamble(),
+        f'The first is {src_desc}.',
+        f'The second is {tgt_desc}.',
+        f'Do these refer to the same entity? {_response_instruction}'
+    ]
+    
+    return "\n".join(prompt_lines)
 
 
-
-# TODO: !! UPDATE THE READABILITY OF THESE TEMPLATES !!
-## TODO (2): USE --> get_domain_preamble(), <-- 
 
 @registry.register("inst_full_context_intersect", entity_type=EntityType.INSTANCE)
 def oupt_inst_full_context_intersect(src_inst, tgt_inst, max_properties=3, fmt_fn=None):
-    if fmt_fn is None: fmt_fn = _global_fmt_fn
-    src_label = get_single_name(src_inst.get_preferred_names()) or src_inst.uri
-    tgt_label = get_single_name(tgt_inst.get_preferred_names()) or tgt_inst.uri
+    if fmt_fn is None: 
+        fmt_fn = _global_fmt_fn
+    
+    src_label = get_deterministic_single_name(src_inst.get_preferred_names()) or src_inst.uri
+    tgt_label = get_deterministic_single_name(tgt_inst.get_preferred_names()) or tgt_inst.uri
+    
     src_type_clause = format_instance_type_clause(src_inst.get_type_names())
     tgt_type_clause = format_instance_type_clause(tgt_inst.get_type_names())
+    
     src_data_sel, tgt_data_sel = select_intersecting_properties(src_inst.get_data_properties(), tgt_inst.get_data_properties(), max_properties=max_properties, intersection_only=True)
     src_obj_sel, tgt_obj_sel = select_intersecting_properties(src_inst.get_object_properties(), tgt_inst.get_object_properties(), max_properties=max_properties, intersection_only=True)
-    def _build(label, tc, dc, oc):
-        return f'"{label}"' + (f', {tc}' if tc else "") + (f' and has attributes: {dc}' if dc else "") + (f' and has relationships: {oc}' if oc else "")
+    
+    def _build(label, type_clause, data_clause, object_clause):
+        built_description = (
+            f'"{label}"' + (f', {type_clause}' if type_clause else "") 
+            + (f' and has attributes: {data_clause}' if data_clause else "") 
+            + (f' and has relationships: {object_clause}' if object_clause else "")
+        )
+        return built_description
+
     src_desc = _build(src_label, src_type_clause, fmt_fn(src_data_sel, max_properties), fmt_fn(src_obj_sel, max_properties))
     tgt_desc = _build(tgt_label, tgt_type_clause, fmt_fn(tgt_data_sel, max_properties), fmt_fn(tgt_obj_sel, max_properties))
-    return f'We have two entities from different knowledge graphs.\n\nThe first is {src_desc}.\n\nThe second is {tgt_desc}.\n\nDo these refer to the same entity?\n\n{_response_instruction}'
+    
+    prompt_lines = [
+        get_domain_preamble(),
+        f'The first is {src_desc}.',
+        f'The second is {tgt_desc}.',
+        f'Do these refer to the same entity? {_response_instruction}'
+    ]
+    
+    return "\n".join(prompt_lines)
 
 
-
-# TODO: !! UPDATE THE READABILITY OF THESE TEMPLATES !!
-## TODO (2): USE --> get_domain_preamble(), <-- 
 
 @registry.register("inst_types_and_attributes_entropy", entity_type=EntityType.INSTANCE)
 def oupt_inst_types_and_attributes_entropy(src_inst, tgt_inst, max_properties=3, fmt_fn=None):
-    if fmt_fn is None: fmt_fn = _global_fmt_fn
-    src_label = get_single_name(src_inst.get_preferred_names()) or src_inst.uri
-    tgt_label = get_single_name(tgt_inst.get_preferred_names()) or tgt_inst.uri
+    if fmt_fn is None: 
+        fmt_fn = _global_fmt_fn
+    src_label = get_deterministic_single_name(src_inst.get_preferred_names()) or src_inst.uri
+    tgt_label = get_deterministic_single_name(tgt_inst.get_preferred_names()) or tgt_inst.uri
+    
     src_type_clause = format_instance_type_clause(src_inst.get_type_names())
     tgt_type_clause = format_instance_type_clause(tgt_inst.get_type_names())
+    
     entropies = _get_merged_entropies(src_inst, tgt_inst)
+    
     src_selected, tgt_selected = select_intersecting_properties(src_inst.get_all_properties(), tgt_inst.get_all_properties(), max_properties=max_properties, intersection_only=True, predicate_entropies=entropies)
+    
     src_attr = fmt_fn(src_selected, max_properties)
     tgt_attr = fmt_fn(tgt_selected, max_properties)
+    
     src_desc = f'"{src_label}"' + (f', {src_type_clause}' if src_type_clause else "") + (f' and {src_attr}' if src_attr else "")
     tgt_desc = f'"{tgt_label}"' + (f', {tgt_type_clause}' if tgt_type_clause else "") + (f' and {tgt_attr}' if tgt_attr else "")
-    return f'We have two entities from different knowledge graphs.\n\nThe first is {src_desc}.\n\nThe second is {tgt_desc}.\n\nDo these refer to the same entity?\n\n{_response_instruction}'
+    
+    prompt_lines = [
+        get_domain_preamble(),
+        f'The first is {src_desc}.',
+        f'The second is {tgt_desc}.',
+        f'Do these refer to the same entity? {_response_instruction}'
+    ]
+    
+    return "\n".join(prompt_lines)
 
 
-
-# TODO: !! UPDATE THE READABILITY OF THESE TEMPLATES !!
 
 @registry.register("inst_full_context_entropy", entity_type=EntityType.INSTANCE)
 def oupt_inst_full_context_entropy(src_inst, tgt_inst, max_properties=3, fmt_fn=None):
-    if fmt_fn is None: fmt_fn = _global_fmt_fn
-    src_label = get_single_name(src_inst.get_preferred_names()) or src_inst.uri
-    tgt_label = get_single_name(tgt_inst.get_preferred_names()) or tgt_inst.uri
+    if fmt_fn is None: 
+        fmt_fn = _global_fmt_fn
+    
+    src_label = get_deterministic_single_name(src_inst.get_preferred_names()) or src_inst.uri
+    tgt_label = get_deterministic_single_name(tgt_inst.get_preferred_names()) or tgt_inst.uri
+    
     src_type_clause = format_instance_type_clause(src_inst.get_type_names())
     tgt_type_clause = format_instance_type_clause(tgt_inst.get_type_names())
+    
     entropies = _get_merged_entropies(src_inst, tgt_inst)
-    src_data_sel, tgt_data_sel = select_intersecting_properties(src_inst.get_data_properties(), tgt_inst.get_data_properties(), max_properties=max_properties, intersection_only=True, predicate_entropies=entropies)
-    src_obj_sel, tgt_obj_sel = select_intersecting_properties(src_inst.get_object_properties(), tgt_inst.get_object_properties(), max_properties=max_properties, intersection_only=True, predicate_entropies=entropies)
-    def _build(label, tc, dc, oc):
-        return f'"{label}"' + (f', {tc}' if tc else "") + (f' and has attributes: {dc}' if dc else "") + (f' and has relationships: {oc}' if oc else "")
+    
+    src_data_sel, tgt_data_sel = select_intersecting_properties(
+        src_props=src_inst.get_data_properties(),
+        tgt_props=tgt_inst.get_data_properties(), 
+        max_properties=max_properties, 
+        intersection_only=True, 
+        predicate_entropies=entropies,
+    )
+
+    src_obj_sel, tgt_obj_sel = select_intersecting_properties(
+        src_props=src_inst.get_object_properties(), 
+        tgt_props=tgt_inst.get_object_properties(), 
+        max_properties=max_properties, 
+        intersection_only=True, 
+        predicate_entropies=entropies
+    )
+    
+    def _build(label, type_clause, data_clause, object_clause):
+        built_description = (
+            f'"{label}"' + (f', {type_clause}' if type_clause else "") 
+            + (f' and has attributes: {data_clause}' if data_clause else "") 
+            + (f' and has relationships: {object_clause}' if object_clause else "")
+        )
+        return built_description
+    
     src_desc = _build(src_label, src_type_clause, fmt_fn(src_data_sel, max_properties), fmt_fn(src_obj_sel, max_properties))
     tgt_desc = _build(tgt_label, tgt_type_clause, fmt_fn(tgt_data_sel, max_properties), fmt_fn(tgt_obj_sel, max_properties))
-    return f'We have two entities from different knowledge graphs.\n\nThe first is {src_desc}.\n\nThe second is {tgt_desc}.\n\nDo these refer to the same entity?\n\n{_response_instruction}'
+    
+    prompt_lines = [
+        get_domain_preamble(),
+        f'The first is {src_desc}.',
+        f'The second is {tgt_desc}.',
+        f'Do these refer to the same entity? {_response_instruction}'
+    ]
+    
+    return "\n".join(prompt_lines)
+
 
 
 
@@ -1106,23 +1282,27 @@ def get_oracle_user_prompt_template_function(oupt_name: str) -> Callable:
 # PROMPT-BUILDING ORCHESTRATION
 ###
 
-# TODO: rework mess
-def build_oracle_user_prompts(oupt_name, onto_src_filepath, onto_tgt_filepath, m_ask_df,
-                               OA_source=None, OA_target=None, sibling_selector=None,
-                               property_prompt_function=None, instance_prompt_function=None,
-                               property_prompt_name=None, instance_prompt_name=None):
+def build_oracle_user_prompts(
+    oupt_name, onto_src_filepath, onto_tgt_filepath, m_ask_df,
+    OA_source=None, OA_target=None, sibling_selector=None,
+    property_prompt_function=None, instance_prompt_function=None,
+    property_prompt_name=None, instance_prompt_name=None) -> dict:
 
     if OA_source is None or OA_target is None:
-        for p in tqdm(iterable=[onto_src_filepath], desc='Preparing source ontology'):
-            OA_source = OntologyAccess(p, annotate_on_init=True)
-        print()
-        for p in tqdm(iterable=[onto_tgt_filepath], desc='Preparing target ontology'):
-            OA_target = OntologyAccess(p, annotate_on_init=True)
+        raise ValueError("You must provide params (OA_source, OA_target).")
+
+    ###
+    # CLS PROMPT:
+    ###
 
     prompt_function = get_oracle_user_prompt_template_function(oupt_name)
 
     if sibling_selector is not None and registry.requires_siblings(oupt_name):
         prompt_function = partial(prompt_function, sibling_selector=sibling_selector)
+
+    ###
+    # PROPERTY PROMPT (IF REQUIRED)
+    ###
 
     if property_prompt_name and property_prompt_function is None:
         try: 
@@ -1130,80 +1310,124 @@ def build_oracle_user_prompts(oupt_name, onto_src_filepath, onto_tgt_filepath, m
         except KeyError: 
             tqdm.write(f"  WARNING: Property template '{property_prompt_name}' not found")
 
+    ###
+    # INSTANCE PROMPT (IF REQUIRED)
+    ###
+
     if instance_prompt_name and instance_prompt_function is None:
         try: 
             instance_prompt_function = get_oracle_user_prompt_template_function(instance_prompt_name)
         except KeyError: 
             tqdm.write(f"  WARNING: Instance template '{instance_prompt_name}' not found")
 
-    print(f"\nPrompt template function obtained: {oupt_name}")
-    
-    if property_prompt_function: 
-        print(f"Property prompt template: {property_prompt_name}")
-    
-    if instance_prompt_function:
-        print(f"Instance prompt template: {instance_prompt_name}")
+    ###
+    # REPORTING
+    ###
 
-    m_ask_oracle_user_prompts = {}
-    skipped_mappings = []
+    info(f"Prompt template function obtained: {oupt_name}")
+    if VERBOSE:
+        debug(f"CLS PROMPT FN: {prompt_function.__repr__()}")
+
+    if property_prompt_function:
+        info(f"Property prompt template: {property_prompt_name}")
+        if VERBOSE:
+            debug(f"PROP PROMPT FN: {property_prompt_function.__repr__()}")
+
+    if instance_prompt_function:
+        info(f"Instance prompt template: {instance_prompt_name}")            
+        if VERBOSE:
+            debug(f"INSTANCE PROMPT FN: {instance_prompt_function.__repr__()}")
+
+    ###
+    # CONSTRUCT M_ASK ORACLE USER PROMPTS
+    #  + LOG SKIPPED MAPPINGS
+    #  + COUNT CLASS, PROPERTY, AND INSTANCE PROMPTS
+    ###
+
+    m_ask_oracle_user_prompts: dict = {}
+    skipped_mappings: list = []
     n_class, n_prop, n_inst = 0, 0, 0
 
     for row in tqdm(m_ask_df.iterrows(), total=m_ask_df.shape[0], desc="Building the prompts"):
+        
         row_series = row[1]
         src_uri, tgt_uri = row_series.iloc[0], row_series.iloc[1]
+
         try:
+            
             src_entity, src_type = resolve_entity(src_uri, OA_source)
             tgt_entity, tgt_type = resolve_entity(tgt_uri, OA_target)
+
+            ###
+            # INSTANCE ALIGNMENT PROMPTS
+            ###
+
             if src_type == "instance" or tgt_type == "instance":
+                
                 if src_type != tgt_type:
                     skipped_mappings.append({"src": src_uri, "tgt": tgt_uri, "reason": f"Mixed types: {src_type}/{tgt_type}"})
                     continue
+                
                 if instance_prompt_function is None:
                     skipped_mappings.append({"src": src_uri, "tgt": tgt_uri, "reason": "No instance template"})
                     continue
+                
                 oracle_user_prompt = instance_prompt_function(src_entity, tgt_entity); n_inst += 1
+            
+            ###
+            # PROPERTY ALIGNMENT PROMPTS
+            ###
+
             elif src_type == "property" or tgt_type == "property":
+            
                 if src_type != tgt_type:
                     skipped_mappings.append({"src": src_uri, "tgt": tgt_uri, "reason": f"Mixed types: {src_type}/{tgt_type}"})
                     continue
+            
                 if property_prompt_function is None:
                     skipped_mappings.append({"src": src_uri, "tgt": tgt_uri, "reason": "No property template"})
                     continue
+            
                 oracle_user_prompt = property_prompt_function(src_entity, tgt_entity); n_prop += 1
+            
             else:
+                # CLASS ALIGNMENT PROMPTS
                 oracle_user_prompt = prompt_function(src_entity, tgt_entity)
                 n_class += 1
+            
+            # INDEX ORACLE USER PROMPT WITHIN M_ASK_ORACLE_USER_PROMPTS DICT:
             m_ask_oracle_user_prompts[src_uri + PAIRS_SEPARATOR + tgt_uri] = oracle_user_prompt
+
+        # END: TRY
         except (ClassNotFoundError, Exception) as e:
             skipped_mappings.append({"src": src_uri, "tgt": tgt_uri, "reason": str(e)})
             tqdm.write(f"  WARNING: Skipping mapping - {e}")
 
-    if skipped_mappings: 
-        print(f"[WARNING] Skipped {len(skipped_mappings)} mappings.")
+    # END: FOR  (MAPPING IN M_ASK)
 
-    print(f"Prompts built: {n_class} cls, {n_prop} prop, {n_inst} inst ({len(m_ask_oracle_user_prompts)} total)")
+    if skipped_mappings:
+        warning(f"Skipped {len(skipped_mappings)} mappings.")
+
+    info(f"Prompts built: {n_class} cls, {n_prop} prop, {n_inst} inst ({len(m_ask_oracle_user_prompts)} total)", important=True)
     
     return m_ask_oracle_user_prompts
 
 
-# TODO: rework mess
-def build_oracle_user_prompts_bidirectional(oupt_name, onto_src_filepath, onto_tgt_filepath,
-                                             m_ask_df, OA_source=None, OA_target=None,
-                                             sibling_selector=None):
+
+def build_oracle_user_prompts_bidirectional(
+        oupt_name, onto_src_filepath, onto_tgt_filepath,
+        m_ask_df, OA_source=None, OA_target=None,
+        sibling_selector=None):
 
     if OA_source is None or OA_target is None:
-        for p in tqdm(iterable=[onto_src_filepath], desc='Preparing source ontology'):
-            OA_source = OntologyAccess(p, annotate_on_init=True)
-        print()
-        for p in tqdm(iterable=[onto_tgt_filepath], desc='Preparing target ontology'):
-            OA_target = OntologyAccess(p, annotate_on_init=True)
+        raise ValueError("You must provide params (OA_source, OA_target).")
 
     prompt_function = get_oracle_user_prompt_template_function(oupt_name)
 
     if sibling_selector is not None and registry.requires_siblings(oupt_name):
         prompt_function = partial(prompt_function, sibling_selector=sibling_selector)
 
-    print(f"Prompt template function obtained: {oupt_name} (bidirectional mode)")
+    info(f"Prompt template function obtained: {oupt_name} (bidirectional mode)")
 
     m_ask_oracle_user_prompts = {}
     skipped_mappings = []
@@ -1212,14 +1436,18 @@ def build_oracle_user_prompts_bidirectional(oupt_name, onto_src_filepath, onto_t
     has_relation_col = m_ask_df.shape[1] > 2
 
     for row in tqdm(m_ask_df.iterrows(), total=m_ask_df.shape[0], desc="Building bidirectional prompts"):
+        
         row_series = row[1]
         src_uri, tgt_uri = row_series.iloc[0], row_series.iloc[1]
+        
         if has_relation_col:
             relation = row_series.iloc[2]
             if relation != '=':
                 n_non_equiv_skipped += 1
                 continue
+        
         n_equiv_candidates += 1
+
         try:
             src_e = OntologyEntryAttr(src_uri, OA_source)
             tgt_e = OntologyEntryAttr(tgt_uri, OA_target)
@@ -1231,57 +1459,12 @@ def build_oracle_user_prompts_bidirectional(oupt_name, onto_src_filepath, onto_t
             tqdm.write(f"  WARNING: Skipping mapping - {e}")
 
     if n_non_equiv_skipped > 0:
-        print(f"  Skipped {n_non_equiv_skipped} non-equivalence candidates.")
+        warn(f"  Skipped {n_non_equiv_skipped} non-equivalence candidates.")
+    
     if skipped_mappings:
-        print(f"[WARNING] Skipped {len(skipped_mappings)} mappings due to errors.")
-    print(f"  Built {n_equiv_candidates * 2} prompts ({n_equiv_candidates} forward + {n_equiv_candidates} reverse)")
+        warning(f"[WARNING] Skipped {len(skipped_mappings)} mappings due to errors.")
+    
+    info(f"  Built {n_equiv_candidates * 2} prompts ({n_equiv_candidates} forward + {n_equiv_candidates} reverse)")
     
     return m_ask_oracle_user_prompts, n_equiv_candidates, n_non_equiv_skipped
 
-
-
-###
-# MISC FUNCS
-###
-
-# TODO: migrate to preferable location (isn't this an older legacy fn?)
-def load_ontologies(onto_src_filepath, onto_tgt_filepath, cache_dir=None):
-    '''
-    Load and return OntologyAccess objects for source and target ontologies.
-    NOTE: This appears to be in the wrong place; migrate to more appropriate module.
-          Also, this is a legacy function, this is from an early local version of the codebase.
-          However, step_two.py currently relies on this... (TODO: fix)
-    '''
-    # wrap the raw cache_dir path into an OntologyCache instance so
-    # that OntologyAccess can call cache.get_cached_world(urionto)
-    # the same instance is reused for both ontologies; cache files
-    # are keyed by hashed source filepath inside cache.py
-    cache = OntologyCache(cache_dir=cache_dir) if cache_dir is not None else None
-
-    def _print_padded_callback(fn: Callable, **kwargs):
-        print()
-        fn(**kwargs)
-        print()
-
-    def _print_load_message(onto_str: str):
-        step("-" * 50)
-        step(f"{'-' * 15}LOADING ONTOLOGY {onto_str}{'-' * 15}")
-        step("-" * 50)
-
-    def _print_done_message():
-        success("-" * 50)
-        success(f"{'-' * 23}DONE{'-' * 23}")
-        success("-" * 50)
-
-    _print_padded_callback(_print_load_message, onto_str="ONE")
-
-    OA_source_onto = OntologyAccess(onto_src_filepath, annotate_on_init=True, cache=cache)
-    
-    _print_padded_callback(_print_done_message)
-    _print_padded_callback(_print_load_message, onto_str="TWO")
-
-    OA_target_onto = OntologyAccess(onto_tgt_filepath, annotate_on_init=True, cache=cache)
-    
-    _print_padded_callback(_print_done_message)
-
-    return OA_source_onto, OA_target_onto

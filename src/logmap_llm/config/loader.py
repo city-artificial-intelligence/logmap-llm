@@ -18,6 +18,7 @@ def load_and_validate_config(
     config_path: str,
     reuse_align: bool = False,
     reuse_prompts: bool = False,
+    reporting: bool = True,
 ) -> LogMapLLMConfig:
     """Load a TOML config file, apply CLI overrides, and validate"""
     if not os.path.isfile(config_path):
@@ -45,7 +46,9 @@ def load_and_validate_config(
             error(f" {field}: {err['msg']}")
         sys.exit(1)
 
-    success(f"configuration validated: {config_path}")
+    if reporting:
+        success(f"configuration validated: {config_path}")
+    
     return cfg
 
 

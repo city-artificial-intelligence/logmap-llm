@@ -119,6 +119,7 @@ class EvaluationResult:
     """Result of the evaluation step."""
     metrics: dict = field(default_factory=dict)
     results: dict = field(default_factory=dict)
+    subprocess_failed: bool = False
 
     @property
     def completed(self) -> bool:

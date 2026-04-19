@@ -2,12 +2,15 @@ from __future__ import annotations
 from typing import Optional, Literal
 from pydantic import BaseModel
 from enum import Enum
+from dataclasses import dataclass, field
+import rdflib
+import os
 
 ###
 # DEBUGGING
 ###
 
-VERBOSE = False
+VERBOSE = True
 VERY_VERBOSE = False
 
 ###
@@ -59,11 +62,12 @@ class ResponseModes(str, Enum):
     PLAIN  = "plain"
 
 class InteractionStyle(str, Enum):
-    OPEN_ROUTER = 'openrouter',
-    OPEN_AI_CHAT_COMPLETIONS_PARSE = 'openai_chat_completions_parse_structured_output',
-    LOCAL_VLLM = 'vllm',
-    LOCAL_SG_LANG = 'sglang',
-    LOCAL_GENERIC = 'local',
+    AUTOMATIC = 'auto'
+    OPEN_ROUTER = 'openrouter'
+    OPEN_AI_CHAT_COMPLETIONS_PARSE = 'openai_chat_completions_parse_structured_output'
+    LOCAL_VLLM = 'vllm'
+    LOCAL_SG_LANG = 'sglang'
+    LOCAL_GENERIC = 'local'
 
 
 ###
@@ -340,4 +344,44 @@ DEEPONTO_TSV_HEADER_PREFIXES: tuple[str, ...] = ("SrcEntity",)
 ###
 
 DEFAULT_CONFIDENCE_FALLBACK = 1.0
+
+###
+# CONSTANTS - CACHE'ING CONSTANTS
+# -------------------------------
+###
+
+DEFAULT_PROJECT_CACHE_ROOT = os.path.join(
+    os.environ.get(
+        'XDG_CACHE_HOME', 
+        os.path.expanduser('~/.cache')
+    ),
+    'logmap-llm',
+)
+
+DEFAULT_OWLREADY2_CACHE_DIR = os.path.join(
+    DEFAULT_PROJECT_CACHE_ROOT,
+    'owlready2',
+)
+
+DEFAULT_ENTROPY_CACHE_DIR = os.path.join(
+    DEFAULT_PROJECT_CACHE_ROOT,
+    'entropies',
+)
+
+JSON_DATA = (
+    dict 
+    | list 
+    | str 
+    | int 
+    | float 
+    | bool 
+    | None
+)
+
+###
+# CONSTANTS - ONTOLOGY ACCESS (OBDA layer)
+# ----------------------------------------
+###
+
+CANONICAL_RDFS_LABEL_URI_REF_STR = "http://www.w3.org/2000/01/rdf-schema#label"
 
