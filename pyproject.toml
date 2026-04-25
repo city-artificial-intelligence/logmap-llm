@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "logmap-llm"
+version = "0.1.0"
+description = "Large Language Models as Oracles for Ontology Alignment with LogMap"
+readme = "README.md"
+license = {text = "MIT License"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Ernesto"},
+    {name = "Dave"},
+    {name = "Jon"},
+]
+dependencies = [
+    "pydantic>=2.0",
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "openai>=1.0",
+    "owlready2>=0.46",
+    "rdflib>=6.0",
+    "tqdm>=4.60",
+    "jpype1>=1.4",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+]
+sibling = [
+    "torch>=2.0",
+    "transformers>=4.30",
+    "sentence-transformers>=2.2",
+]
+
+[project.scripts]
+logmap-llm = "logmap_llm.pipeline.runner:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["logmap_llm*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

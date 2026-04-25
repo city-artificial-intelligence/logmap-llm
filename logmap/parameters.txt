@@ -151,3 +151,22 @@ filter_entity|http://www.w3.org/1999/02/22-rdf-syntax-ns
 filter_entity|http://purl.org/dc/elements/
 filter_entity|http://mouse.owl#UNDEFINED_part_of
 filter_entity|http://human.owl#UNDEFINED_part_of
+
+##
+# JD. Experimental Parameters: index_undeclared_abox_predicates_for_annotation_matching
+# -------------------------------------------------------------------------------------
+#   when properties exist as undeclared ABox predicates with no co-responding TBox
+#   such as the OAEI KG track, we would like to extract, index, then match them
+#   the routine for handling this is placed within OntologyProcessing with the other
+#   lexicon processing routines - you can toggle it on/off according to the following param:
+##
+index_undeclared_abox_predicates_for_annotation_matching|true
+
+##
+# JD. Experimental Parameters: annotation_property_uri_pattern
+# ------------------------------------------------------------
+#   some KGs (like DBpedia) use a NS convention where property URIs contain /property/<prop>
+#   WARNING: this feature should be used cautiously and is not guaranteed to work on any KGs
+##
+annotation_property_uri_pattern|/property/
+
